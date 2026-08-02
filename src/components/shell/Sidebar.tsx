@@ -8,9 +8,9 @@ const NAV = [
   { href: "/intake", label: "Catalog Intake", Icon: UploadCloud, badge: null, badgeColor: "" },
   { href: "/readiness", label: "Retailer Readiness", Icon: ShoppingBag, badge: null, badgeColor: "" },
   { href: "/mapping", label: "Mapping Studio", Icon: GitMerge, badge: "3", badgeColor: "default" },
-  { href: "/validation", label: "Validation & Exceptions", Icon: AlertTriangle, badge: "5", badgeColor: "red" },
+  { href: "/validation", label: "Validation & Exceptions", Icon: AlertTriangle, badge: "12", badgeColor: "red" },
   { href: "/delivery", label: "Delivery", Icon: Send, badge: null, badgeColor: "" },
-  { href: "/feedback", label: "Retail Feedback", Icon: MessageSquareWarning, badge: "2", badgeColor: "amber" },
+  { href: "/feedback", label: "Retail Feedback", Icon: MessageSquareWarning, badge: "8", badgeColor: "amber" },
 ];
 
 export function Sidebar() {
