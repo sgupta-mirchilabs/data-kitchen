@@ -9,6 +9,8 @@ import { findDuplicate } from "./duplicate-resolver.js";
 import { diffProductFields, serializeHistoryValue } from "./history.js";
 import { ParseError, ValidationError } from "../errors/api-errors.js";
 import type { AppConfig } from "../config.js";
+import type { TenantContext } from "../auth/types.js";
+import { buildTenantStorageKey, createTenantScopedStorage } from "../storage/tenant-scoped-storage.js";
 
 export interface UploadResult {
   importBatchId: string;
@@ -43,17 +45,20 @@ export class ImportService {
   ) {}
 
   async uploadAndPreview(
+    ctx: TenantContext,
     catalogId: string,
-    organizationId: string,
     filename: string,
     fileBuffer: Buffer,
     sourceSystem?: string,
   ): Promise<UploadResult> {
     const fileType = detectFileType(filename);
     const checksum = createHash("sha256").update(fileBuffer).digest("hex");
-    const storageKey = `${organizationId}/${catalogId}/${Date.now()}-${filename}`;
 
-    await this.storage.upload(storageKey, fileBuffer, fileType === "json" ? "application/json" : "text/csv");
+    const tempImportId = `pre-${Date.now()}`;
+    const storageKey = buildTenantStorageKey(ctx.organizationId, catalogId, tempImportId, filename);
+    const scopedStorage = createTenantScopedStorage(this.storage, ctx.organizationId);
+
+    await scopedStorage.upload(storageKey, fileBuffer, fileType === "json" ? "application/json" : "text/csv");
 
     const content = fileBuffer.toString("utf-8");
     let parseResult: ParseResult;
@@ -66,12 +71,12 @@ export class ImportService {
 
     const batch = await this.prisma.importBatch.create({
       data: {
-        organizationId,
+        organizationId: ctx.organizationId,
         catalogId,
         filename,
         fileType,
         sourceSystem: sourceSystem ?? null,
-        uploadedBy: this.config.defaultUser,
+        uploadedBy: ctx.displayName,
         status: "uploaded",
         totalRows: parseResult.metadata.totalRows,
         fileStorageKey: storageKey,
@@ -96,11 +101,12 @@ export class ImportService {
   }
 
   async confirmImport(
+    ctx: TenantContext,
     importBatchId: string,
     fieldMappings: FieldMapping,
   ): Promise<ImportResults> {
-    const batch = await this.prisma.importBatch.findUnique({
-      where: { id: importBatchId },
+    const batch = await this.prisma.importBatch.findFirst({
+      where: { id: importBatchId, organizationId: ctx.organizationId },
     });
 
     if (!batch) throw new ValidationError(`Import batch not found: ${importBatchId}`);
@@ -111,7 +117,8 @@ export class ImportService {
       data: { status: "parsing", fieldMappings: fieldMappings as unknown as any },
     });
 
-    const fileBuffer = await this.storage.download(batch.fileStorageKey!);
+    const scopedStorage = createTenantScopedStorage(this.storage, ctx.organizationId);
+    const fileBuffer = await scopedStorage.download(batch.fileStorageKey!);
     const content = fileBuffer.toString("utf-8");
 
     let parseResult: ParseResult;
@@ -191,7 +198,7 @@ export class ImportService {
             const historyChanges = diffProductFields(existingFields, incomingFields);
 
             updateData.dataQualityStatus = effectiveStatus;
-            updateData.updatedBy = this.config.defaultUser;
+            updateData.updatedBy = ctx.displayName;
 
             await this.prisma.$transaction(async (tx) => {
               await tx.canonicalProduct.update({
@@ -264,8 +271,8 @@ export class ImportService {
                 lifecycleStatus: "draft",
                 dataQualityStatus: matchStatus,
                 attributes: (normalized.attributes ?? {}) as unknown as any,
-                createdBy: this.config.defaultUser,
-                updatedBy: this.config.defaultUser,
+                createdBy: ctx.displayName,
+                updatedBy: ctx.displayName,
               },
             });
 

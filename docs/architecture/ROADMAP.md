@@ -71,8 +71,12 @@ Phase 1 replaced the prototype's first screen with a production-grade data pipel
 - **Product Change History** — Field-level change log with dot-notation paths, previous/new values, source record linkage, and actor tracking.
 - **Duplicate Detection** — SKU-first, GTIN-second matching within a catalog, with non-destructive updates (null incoming values never overwrite existing data).
 - **Live / Demo Mode** — Automatic mode resolution based on backend availability, with repository pattern isolating data access from UI components.
-- **REST API** — 14 endpoints covering catalogs, imports, products, source records, provenance, and history, with consistent response envelopes and structured error codes.
-- **CI/CD** — Independent deployment pipelines for frontend (Azure Static Web Apps) and backend (Azure App Service), with path-scoped triggers.
+- **REST API** — 21 endpoints covering catalogs, imports, products, source records, provenance, history, user identity, organization management, and audit log, with consistent response envelopes and structured error codes.
+- **Multi-Tenant Foundation** — Organization, User, and OrganizationMembership models. Application-level tenant isolation with org-scoped queries on all routes. `TenantScopedStorage` with prefix enforcement for blob storage.
+- **Authentication & Authorization** — Provider-neutral `AuthProvider` interface with `DevAuthProvider` (development) validating against `DEV_AUTH_TOKEN`. Role-based access control with 3 roles and 5 permissions. Active org selection via `X-Organization-Id` for multi-org users.
+- **Operational Audit** — Append-only `AuditLog` for auth failures, catalog/import operations, org settings changes, and authorization denials. Request correlation via `X-Request-Id`. Catalog classification (`catalog_type`: test/production/sandbox/other).
+- **Configuration Safety** — Fail-fast startup validation for production config. Seed script refuses `NODE_ENV=production` and requires `ALLOW_DEV_SEED=true`.
+- **CI/CD** — Independent deployment pipelines for frontend (Azure Static Web Apps) and backend (Azure App Service), with path-scoped triggers. 90 unit tests + 23 integration tests.
 
 **Why this was built first:** Every phase in the roadmap depends on trusted, well-structured product data with a clear audit trail. Readiness scoring evaluates canonical products. Mapping transforms canonical fields. Validation checks canonical values. Delivery packages canonical data. Feedback routes back to canonical products. Without a production-grade canonical product model, source preservation, provenance, and change history, the downstream phases would be built on sand.
 

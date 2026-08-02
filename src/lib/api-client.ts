@@ -1,4 +1,22 @@
-const BASE_URL = import.meta.env.VITE_API_URL ?? "/api/v1";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api/v1";
+
+const ORG_STORAGE_KEY = "dk-selected-org-id";
+
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  const token = import.meta.env.VITE_DEV_AUTH_TOKEN;
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const orgId = sessionStorage.getItem(ORG_STORAGE_KEY);
+  if (orgId) {
+    headers["X-Organization-Id"] = orgId;
+  }
+
+  return headers;
+}
 
 interface ApiResponse<T> {
   data: T;
@@ -29,9 +47,16 @@ async function handleResponse<T>(response: Response): Promise<ApiResponse<T>> {
     try {
       body = await response.json();
     } catch { /* ignore parse failures */ }
+
+    const code = body?.error?.code ?? "UNKNOWN";
+
+    if (code === "INVALID_ORGANIZATION" || code === "FORBIDDEN") {
+      sessionStorage.removeItem(ORG_STORAGE_KEY);
+    }
+
     throw new ApiClientError(
       response.status,
-      body?.error?.code ?? "UNKNOWN",
+      code,
       body?.error?.message ?? `HTTP ${response.status}`,
       body?.error?.details,
     );
@@ -39,16 +64,39 @@ async function handleResponse<T>(response: Response): Promise<ApiResponse<T>> {
   return response.json();
 }
 
+export function setSelectedOrganization(orgId: string): void {
+  sessionStorage.setItem(ORG_STORAGE_KEY, orgId);
+}
+
+export function getSelectedOrganization(): string | null {
+  return sessionStorage.getItem(ORG_STORAGE_KEY);
+}
+
+export function clearSelectedOrganization(): void {
+  sessionStorage.removeItem(ORG_STORAGE_KEY);
+}
+
 export const api = {
   async get<T>(path: string): Promise<ApiResponse<T>> {
-    const response = await fetch(`${BASE_URL}${path}`);
+    const response = await fetch(`${BASE_URL}${path}`, {
+      headers: { ...authHeaders() },
+    });
     return handleResponse<T>(response);
   },
 
   async post<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
     const response = await fetch(`${BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return handleResponse<T>(response);
+  },
+
+  async patch<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
+    const response = await fetch(`${BASE_URL}${path}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: body ? JSON.stringify(body) : undefined,
     });
     return handleResponse<T>(response);
@@ -64,6 +112,7 @@ export const api = {
     }
     const response = await fetch(`${BASE_URL}${path}`, {
       method: "POST",
+      headers: { ...authHeaders() },
       body: formData,
     });
     return handleResponse<T>(response);

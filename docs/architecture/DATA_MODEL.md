@@ -3,7 +3,7 @@
 > **Last updated:** 2026-08-02
 > **Scope:** Step 1 — Real Catalog Intake, Canonical Product Model, and Persistence
 > **Prisma schema:** `server/prisma/schema.prisma`
-> **Custom migration:** `server/prisma/migrations/00000000000000_init/migration.sql`
+> **Migrations:** `server/prisma/migrations/00000000000000_init/` (core tables), `server/prisma/migrations/20250802000000_add_multi_tenancy/` (tenant identity), `server/prisma/migrations/20250802010000_add_audit_log_and_catalog_type/` (audit log + catalog classification)
 
 ---
 
@@ -23,6 +23,11 @@ Every other table exists to support these three answers. The schema intentionall
 
 ```mermaid
 erDiagram
+    ORGANIZATION ||--o{ ORGANIZATION_MEMBERSHIP : "has members"
+    ORGANIZATION ||--o{ CATALOG : "owns catalogs"
+    ORGANIZATION ||--o{ IMPORT_BATCH : "owns imports"
+    ORGANIZATION ||--o{ CANONICAL_PRODUCT : "owns products"
+    USER ||--o{ ORGANIZATION_MEMBERSHIP : "belongs to orgs"
     CATALOG ||--o{ IMPORT_BATCH : "receives imports"
     CATALOG ||--o{ CANONICAL_PRODUCT : "contains products"
     IMPORT_BATCH ||--o{ SOURCE_RECORD : "produces rows"
@@ -32,11 +37,42 @@ erDiagram
     SOURCE_RECORD ||--o{ FIELD_PROVENANCE : "contributed fields"
     SOURCE_RECORD ||--o{ CANONICAL_PRODUCT_HISTORY : "caused changes"
 
+    ORGANIZATION {
+        uuid id PK
+        varchar name
+        varchar slug UK
+        varchar status "active"
+        jsonb settings "{}"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    USER {
+        uuid id PK
+        varchar external_identity_id UK "auth provider subject"
+        varchar email
+        varchar display_name
+        varchar status "active"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    ORGANIZATION_MEMBERSHIP {
+        uuid id PK
+        uuid organization_id FK
+        uuid user_id FK
+        varchar role "organization_admin / operator / viewer"
+        varchar status "active"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
     CATALOG {
         uuid id PK
         uuid organization_id "tenant isolation"
         varchar name
         text description
+        varchar catalog_type "test / production / sandbox / other"
         varchar created_by
         varchar updated_by
         timestamptz created_at
@@ -114,6 +150,22 @@ erDiagram
         text previous_value "null = SQL NULL, not string"
         text new_value
         varchar actor "system:import or user identity"
+        timestamptz created_at
+    }
+
+    ORGANIZATION ||--o{ AUDIT_LOG : "tracks events"
+
+    AUDIT_LOG {
+        uuid id PK
+        uuid organization_id FK "nullable — null for pre-auth events"
+        varchar action "auth_failure / catalog_created / etc"
+        varchar actor_id "nullable — user ID"
+        varchar actor_email "nullable"
+        varchar resource_type "nullable"
+        varchar resource_id "nullable"
+        jsonb metadata "additional context"
+        varchar ip_address "nullable"
+        varchar request_id "correlation ID"
         timestamptz created_at
     }
 ```
@@ -590,14 +642,13 @@ Data Kitchen uses **logical multi-tenancy** — all tenants share the same datab
 | `source_record` | No | Reachable through `import_batch.organization_id` via FK |
 | `field_provenance` | No | Reachable through `canonical_product.organization_id` via FK |
 | `canonical_product_history` | No | Reachable through `canonical_product.organization_id` via FK |
+| `audit_log` | Yes (FK, nullable) | Org-scoped reads; nullable for pre-auth events (e.g., auth failures before org resolution) |
 
 The `organization_id` is denormalized onto `import_batch` and `canonical_product` so that tenant-scoped queries (list all products for an org, list all imports for an org) do not require a join to `catalog`. This is a performance optimization for what will be the most common query pattern.
 
 ### Isolation enforcement
 
-Currently enforced at the **application layer**: `config.defaultOrgId` is injected into every query. There are no row-level security policies in PostgreSQL.
-
-When authentication is added, the org ID will be resolved from the authenticated session. The query pattern will not change — only the source of the org ID value. Row-level security (RLS) policies may be added as a defense-in-depth measure, but the primary enforcement will remain in the application layer.
+Enforced at the **application layer**: every request is authenticated via `AuthProvider`, tenant context is resolved from the user's `OrganizationMembership`, and all queries filter by `request.tenantContext.organizationId`. There are no row-level security policies in PostgreSQL (deferred as defense-in-depth; see MULTI_TENANCY.md). Authorization uses explicit role-to-permission mapping (not string comparison) with three roles: `organization_admin`, `operator`, `viewer`.
 
 ### Index support
 
@@ -622,6 +673,7 @@ Every foreign key in the schema has an intentional `ON DELETE` behavior:
 | `canonical_product_history.source_record_id` | `history` → `source_record` | **SET NULL** | If a source record is removed, the history record survives |
 | `field_provenance.canonical_product_id` | `provenance` → `canonical_product` | **RESTRICT** | Cannot delete a product that has provenance — would lose field origin data |
 | `field_provenance.source_record_id` | `provenance` → `source_record` | **RESTRICT** | Cannot delete a source record that has provenance — provenance depends on both endpoints |
+| `audit_log.organization_id` | `audit_log` → `organization` | **SET NULL** | If an org is removed, audit records survive — preserves security audit trail |
 
 The pattern is:
 - **RESTRICT** when the child record's meaning depends on the parent (provenance without a product is meaningless).

@@ -17,18 +17,64 @@ function optionalInt(key: string, fallback: number): number {
 }
 
 export function loadConfig() {
+  const nodeEnv = optional("NODE_ENV", "development");
+  const isProduction = nodeEnv === "production";
+  const authMode = optional("AUTH_MODE", "development") as "development" | "production";
+
+  if (authMode === "development" && isProduction) {
+    throw new Error(
+      "AUTH_MODE=development cannot be used when NODE_ENV=production. " +
+      "Set AUTH_MODE=production for production deployments.",
+    );
+  }
+
+  if (authMode === "production") {
+    if (!process.env.AUTH_ISSUER) throw new Error("Production auth requires AUTH_ISSUER");
+    if (!process.env.AUTH_AUDIENCE) throw new Error("Production auth requires AUTH_AUDIENCE");
+    if (!process.env.AUTH_JWKS_URI) throw new Error("Production auth requires AUTH_JWKS_URI");
+  }
+
+  let devAuthToken: string | undefined;
+  if (authMode === "development") {
+    devAuthToken = process.env.DEV_AUTH_TOKEN;
+    if (!devAuthToken) {
+      throw new Error("DEV_AUTH_TOKEN is required when AUTH_MODE=development");
+    }
+  }
+
+  const originsRaw = isProduction
+    ? required("ALLOWED_ORIGINS")
+    : optional("ALLOWED_ORIGINS", "http://localhost:5173");
+  const origins = originsRaw.split(",").map((o) => o.trim()).filter(Boolean);
+
+  if (isProduction && origins.includes("*")) {
+    throw new Error("Wildcard CORS origin (*) is not allowed in production");
+  }
+
+  const storageProvider = optional("STORAGE_PROVIDER", "local") as "azure" | "local";
+  if (storageProvider === "azure") {
+    if (!process.env.AZURE_STORAGE_CONNECTION_STRING) {
+      throw new Error("AZURE_STORAGE_CONNECTION_STRING is required when STORAGE_PROVIDER=azure");
+    }
+  }
+
   return {
     port: optionalInt("PORT", 3001),
     host: optional("HOST", "0.0.0.0"),
-    nodeEnv: optional("NODE_ENV", "development"),
+    nodeEnv,
 
     databaseUrl: required("DATABASE_URL"),
 
-    defaultOrgId: optional("DEFAULT_ORG_ID", "00000000-0000-0000-0000-000000000001"),
-    defaultUser: optional("DEFAULT_USER", "system"),
+    auth: {
+      mode: authMode,
+      devAuthToken,
+      issuer: process.env.AUTH_ISSUER,
+      audience: process.env.AUTH_AUDIENCE,
+      jwksUri: process.env.AUTH_JWKS_URI,
+    },
 
     storage: {
-      provider: optional("STORAGE_PROVIDER", "local") as "azure" | "local",
+      provider: storageProvider,
       azureConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
       azureContainer: optional("AZURE_STORAGE_CONTAINER", "imports"),
       localBasePath: optional("LOCAL_STORAGE_PATH", "./uploads"),
@@ -40,7 +86,7 @@ export function loadConfig() {
     },
 
     cors: {
-      origin: optional("CORS_ORIGIN", "http://localhost:5173"),
+      origins,
     },
   } as const;
 }

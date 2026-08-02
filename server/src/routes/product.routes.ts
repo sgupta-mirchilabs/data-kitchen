@@ -1,17 +1,31 @@
 import type { FastifyInstance } from "fastify";
 import "../types.js";
+import { requirePermission } from "../auth/permissions.js";
 
 export async function productRoutes(app: FastifyInstance) {
   app.get<{
     Params: { catalogId: string };
     Querystring: { page?: string; limit?: string; status?: string; search?: string };
   }>("/catalogs/:catalogId/products", async (request, reply) => {
+    const ctx = request.tenantContext;
+    requirePermission(ctx, "product:read");
+
     const { catalogId } = request.params;
+
+    const catalog = await app.prisma.catalog.findFirst({
+      where: { id: catalogId, organizationId: ctx.organizationId },
+    });
+    if (!catalog) {
+      return reply.status(404).send({
+        error: { code: "NOT_FOUND", message: `Catalog not found: ${catalogId}` },
+      });
+    }
+
     const page = Math.max(1, parseInt(request.query.page ?? "1", 10));
     const limit = Math.min(100, Math.max(1, parseInt(request.query.limit ?? "50", 10)));
     const skip = (page - 1) * limit;
 
-    const where: Record<string, unknown> = { catalogId };
+    const where: Record<string, unknown> = { catalogId, organizationId: ctx.organizationId };
 
     if (request.query.status && request.query.status !== "all") {
       where.dataQualityStatus = request.query.status;
@@ -44,8 +58,11 @@ export async function productRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string } }>("/products/:id", async (request, reply) => {
-    const product = await app.prisma.canonicalProduct.findUnique({
-      where: { id: request.params.id },
+    const ctx = request.tenantContext;
+    requirePermission(ctx, "product:read");
+
+    const product = await app.prisma.canonicalProduct.findFirst({
+      where: { id: request.params.id, organizationId: ctx.organizationId },
     });
 
     if (!product) {
@@ -60,13 +77,25 @@ export async function productRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { page?: string; limit?: string } }>(
     "/products/:id/source-records",
     async (request, reply) => {
+      const ctx = request.tenantContext;
+      requirePermission(ctx, "product:read");
+
+      const product = await app.prisma.canonicalProduct.findFirst({
+        where: { id: request.params.id, organizationId: ctx.organizationId },
+      });
+      if (!product) {
+        return reply.status(404).send({
+          error: { code: "NOT_FOUND", message: `Product not found: ${request.params.id}` },
+        });
+      }
+
       const page = Math.max(1, parseInt(request.query.page ?? "1", 10));
       const limit = Math.min(100, Math.max(1, parseInt(request.query.limit ?? "20", 10)));
       const skip = (page - 1) * limit;
 
       const [records, total] = await Promise.all([
         app.prisma.sourceRecord.findMany({
-          where: { canonicalProductId: request.params.id },
+          where: { canonicalProductId: product.id },
           orderBy: { createdAt: "desc" },
           include: {
             importBatch: {
@@ -77,7 +106,7 @@ export async function productRoutes(app: FastifyInstance) {
           take: limit,
         }),
         app.prisma.sourceRecord.count({
-          where: { canonicalProductId: request.params.id },
+          where: { canonicalProductId: product.id },
         }),
       ]);
 
@@ -91,13 +120,25 @@ export async function productRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { page?: string; limit?: string } }>(
     "/products/:id/provenance",
     async (request, reply) => {
+      const ctx = request.tenantContext;
+      requirePermission(ctx, "product:read");
+
+      const product = await app.prisma.canonicalProduct.findFirst({
+        where: { id: request.params.id, organizationId: ctx.organizationId },
+      });
+      if (!product) {
+        return reply.status(404).send({
+          error: { code: "NOT_FOUND", message: `Product not found: ${request.params.id}` },
+        });
+      }
+
       const page = Math.max(1, parseInt(request.query.page ?? "1", 10));
       const limit = Math.min(100, Math.max(1, parseInt(request.query.limit ?? "50", 10)));
       const skip = (page - 1) * limit;
 
       const [records, total] = await Promise.all([
         app.prisma.fieldProvenance.findMany({
-          where: { canonicalProductId: request.params.id },
+          where: { canonicalProductId: product.id },
           orderBy: { createdAt: "desc" },
           include: {
             sourceRecord: {
@@ -110,7 +151,7 @@ export async function productRoutes(app: FastifyInstance) {
           take: limit,
         }),
         app.prisma.fieldProvenance.count({
-          where: { canonicalProductId: request.params.id },
+          where: { canonicalProductId: product.id },
         }),
       ]);
 
@@ -124,19 +165,31 @@ export async function productRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { page?: string; limit?: string } }>(
     "/products/:id/history",
     async (request, reply) => {
+      const ctx = request.tenantContext;
+      requirePermission(ctx, "product:read");
+
+      const product = await app.prisma.canonicalProduct.findFirst({
+        where: { id: request.params.id, organizationId: ctx.organizationId },
+      });
+      if (!product) {
+        return reply.status(404).send({
+          error: { code: "NOT_FOUND", message: `Product not found: ${request.params.id}` },
+        });
+      }
+
       const page = Math.max(1, parseInt(request.query.page ?? "1", 10));
       const limit = Math.min(100, Math.max(1, parseInt(request.query.limit ?? "50", 10)));
       const skip = (page - 1) * limit;
 
       const [records, total] = await Promise.all([
         app.prisma.canonicalProductHistory.findMany({
-          where: { canonicalProductId: request.params.id },
+          where: { canonicalProductId: product.id },
           orderBy: { createdAt: "desc" },
           skip,
           take: limit,
         }),
         app.prisma.canonicalProductHistory.count({
-          where: { canonicalProductId: request.params.id },
+          where: { canonicalProductId: product.id },
         }),
       ]);
 

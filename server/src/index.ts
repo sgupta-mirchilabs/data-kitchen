@@ -7,10 +7,23 @@ import { healthRoutes } from "./routes/health.routes.js";
 import { catalogRoutes } from "./routes/catalog.routes.js";
 import { importRoutes } from "./routes/import.routes.js";
 import { productRoutes } from "./routes/product.routes.js";
+import { organizationRoutes } from "./routes/organization.routes.js";
+import { userRoutes } from "./routes/user.routes.js";
 import { PrismaClient } from "@prisma/client";
 import { createStorageProvider } from "./storage/storage.factory.js";
+import { DevAuthProvider } from "./auth/dev-auth-provider.js";
+import { AutoTenantResolver } from "./auth/auto-tenant-resolver.js";
+import { registerAuthHook } from "./auth/middleware.js";
+import { writeAuditLog } from "./services/audit.service.js";
+import type { AuthProvider, TenantResolver } from "./auth/types.js";
 
 const config = loadConfig();
+
+if (config.auth.mode === "development") {
+  console.warn(
+    "AUTH_MODE=development — requests authenticated with configured DEV_AUTH_TOKEN. NOT FOR PRODUCTION.",
+  );
+}
 
 const prisma = new PrismaClient({
   datasourceUrl: config.databaseUrl,
@@ -22,9 +35,10 @@ const app = Fastify({
   logger: {
     level: config.nodeEnv === "production" ? "info" : "debug",
   },
+  genReqId: () => crypto.randomUUID(),
 });
 
-await app.register(cors, { origin: config.cors.origin });
+await app.register(cors, { origin: config.cors.origins });
 await app.register(multipart, {
   limits: { fileSize: config.upload.maxFileSizeMb * 1024 * 1024 },
 });
@@ -33,8 +47,35 @@ app.decorate("prisma", prisma);
 app.decorate("storage", storage);
 app.decorate("config", config);
 
-app.setErrorHandler((error, _request, reply) => {
+let authProvider: AuthProvider;
+let tenantResolver: TenantResolver;
+
+if (config.auth.mode === "development") {
+  authProvider = new DevAuthProvider(config.auth.devAuthToken!);
+} else {
+  throw new Error("Production auth provider not yet implemented. Set AUTH_MODE=development.");
+}
+
+tenantResolver = new AutoTenantResolver();
+
+registerAuthHook(app, authProvider, tenantResolver);
+
+app.setErrorHandler(async (error, request, reply) => {
   if (error instanceof AppError) {
+    if (error.code === "FORBIDDEN" && error.details?.requiredPermission) {
+      await writeAuditLog(prisma, {
+        organizationId: request.tenantContext?.organizationId,
+        userId: request.tenantContext?.userId,
+        action: "authorization.denied",
+        requestId: request.requestId,
+        result: "denied",
+        metadata: {
+          permission: error.details.requiredPermission,
+          route: request.url.split("?")[0],
+          method: request.method,
+        },
+      });
+    }
     return reply.status(error.statusCode).send({
       error: {
         code: error.code,
@@ -67,9 +108,11 @@ app.setErrorHandler((error, _request, reply) => {
 });
 
 await app.register(healthRoutes, { prefix: "/api/v1" });
+await app.register(userRoutes, { prefix: "/api/v1" });
 await app.register(catalogRoutes, { prefix: "/api/v1" });
 await app.register(importRoutes, { prefix: "/api/v1" });
 await app.register(productRoutes, { prefix: "/api/v1" });
+await app.register(organizationRoutes, { prefix: "/api/v1" });
 
 try {
   await prisma.$connect();

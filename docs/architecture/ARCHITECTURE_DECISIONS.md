@@ -498,9 +498,13 @@ The current system writes history records synchronously during import. An event-
 
 ### Authentication and Authorization
 
-**Deferred until:** Multi-user access is required.
+**Status:** Implemented — provider-neutral auth with development mode, hardened for internal deployment.
 
-The current system uses a hardcoded `DEFAULT_ORG_ID` and `DEFAULT_USER`. The data model already includes `organization_id` on every table and `created_by`/`updated_by` fields, providing the schema foundation for multi-tenant access control. The API will need authentication middleware and the organization ID will need to be resolved from the authenticated user's session.
+Authentication uses a provider-neutral `AuthProvider` interface. In development, `DevAuthProvider` validates the Bearer token against the configured `DEV_AUTH_TOKEN` environment variable — incorrect, empty, or missing tokens are rejected with 401. In production, a JWT-validating provider (vendor TBD) will be configured via `AUTH_ISSUER`, `AUTH_AUDIENCE`, and `AUTH_JWKS_URI`.
+
+The `AutoTenantResolver` resolves the authenticated user to a `TenantContext` (userId, organizationId, role). Single-org users are auto-resolved; multi-org users must send `X-Organization-Id` (validated against active memberships). Authorization uses explicit role-to-permission mapping with three roles (`organization_admin`, `operator`, `viewer`) and five permissions.
+
+Operational audit logging records auth failures, catalog/import operations, org settings changes, and authorization denials in an append-only `AuditLog` table. Request correlation via `X-Request-Id` propagates through requests, responses, and structured logs. See `MULTI_TENANCY.md` for the full design.
 
 ---
 
@@ -544,4 +548,10 @@ These are capabilities Data Kitchen is explicitly not trying to build. They are 
 | 2026-08-02 | Single-process monolith, defer microservices | Accepted | ADR-016 |
 | 2026-08-02 | SKU-first, GTIN-second duplicate detection | Accepted | ADR-017 |
 | 2026-08-02 | Auto-created default catalog | Accepted | ADR-018 |
-| 2026-08-02 | Deferred: AI agents, product identity, async, events, auth | Deferred | — |
+| 2026-08-02 | Provider-neutral auth with DevAuthProvider, AutoTenantResolver | Accepted | ADR-019, ADR-020 |
+| 2026-08-02 | Interim internal-test auth mode with DEV_AUTH_TOKEN | Accepted | ADR-021 |
+| 2026-08-02 | Role-based authorization with explicit permission mapping | Accepted | ADR-022 |
+| 2026-08-02 | Organization configuration — hybrid typed + JSONB | Accepted | ADR-023 |
+| 2026-08-02 | PostgreSQL RLS deferred as defense-in-depth | Deferred | ADR-024 |
+| 2026-08-02 | Tenant-isolated blob storage with prefix enforcement | Accepted | ADR-025 |
+| 2026-08-02 | Deferred: AI agents, product identity, async, events | Deferred | — |

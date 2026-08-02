@@ -228,17 +228,25 @@ The backend is a single Fastify process organized into layers:
 server/
 ├── src/
 │   ├── index.ts                    # Bootstrap, DI wiring, lifecycle
-│   ├── config.ts                   # Environment-driven configuration
+│   ├── config.ts                   # Environment-driven configuration, fail-fast validation
 │   ├── types.ts                    # Fastify type augmentation
 │   ├── errors/
 │   │   └── api-errors.ts           # Structured error hierarchy
+│   ├── auth/
+│   │   ├── types.ts                # AuthProvider, TenantContext, AuthenticatedUser
+│   │   ├── dev-auth-provider.ts    # Development auth (DEV_AUTH_TOKEN validation)
+│   │   ├── auto-tenant-resolver.ts # Auto/explicit org resolution
+│   │   ├── middleware.ts           # onRequest auth hook, request correlation
+│   │   └── permissions.ts          # Role-to-permission mapping
 │   ├── storage/
 │   │   ├── storage.interface.ts    # StorageProvider contract
 │   │   ├── azure-blob.storage.ts   # Azure Blob implementation
 │   │   ├── local-fs.storage.ts     # Local filesystem implementation
-│   │   └── storage.factory.ts      # Provider selection factory
+│   │   ├── storage.factory.ts      # Provider selection factory
+│   │   └── tenant-scoped.storage.ts# Tenant-prefixed storage wrapper
 │   ├── services/
 │   │   ├── import.service.ts       # Import orchestration
+│   │   ├── audit.service.ts        # Append-only audit logging
 │   │   ├── normalizer.ts           # Field mapping & normalization
 │   │   ├── duplicate-resolver.ts   # SKU/GTIN duplicate detection
 │   │   ├── history.ts              # Change tracking & serialization
@@ -247,17 +255,21 @@ server/
 │   │       ├── csv-parser.ts       # CSV/TSV parsing
 │   │       └── json-parser.ts      # JSON parsing
 │   └── routes/
-│       ├── health.routes.ts        # GET /health
-│       ├── catalog.routes.ts       # Catalog CRUD
-│       ├── import.routes.ts        # Import lifecycle
-│       └── product.routes.ts       # Product queries
+│       ├── health.routes.ts        # GET /health (public)
+│       ├── user.routes.ts          # GET /me, GET /me/organizations (auth-only)
+│       ├── catalog.routes.ts       # Catalog CRUD (tenant-scoped)
+│       ├── import.routes.ts        # Import lifecycle (tenant-scoped)
+│       ├── product.routes.ts       # Product queries (tenant-scoped)
+│       └── organization.routes.ts  # Org settings, members, audit log (tenant-scoped)
 ├── prisma/
-│   ├── schema.prisma               # Data model (6 tables)
-│   ├── migrations/                 # SQL migrations
+│   ├── schema.prisma               # Data model (12 tables)
+│   ├── migrations/                 # 3 SQL migrations
+│   ├── seed.ts                     # Dev seed (production-safe guards)
 │   └── ADR-001-product-identity.md # Deferred identity decision
 └── test/
     ├── fixtures/                   # Sample CSV/JSON files
-    └── unit/                       # 48 unit tests
+    ├── unit/                       # 90 unit tests
+    └── integration/                # 23 tenant-isolation tests (requires PostgreSQL)
 ```
 
 ### Backend Request Flow
@@ -299,8 +311,10 @@ Dependencies are wired at startup in `index.ts` and attached to the Fastify inst
 | Dependency | Access Pattern | Lifecycle |
 |---|---|---|
 | PrismaClient | `fastify.prisma` | Created at startup, connected before listen, disconnected on shutdown |
-| StorageProvider | `fastify.storage` | Created at startup via factory (Azure or local based on env) |
+| StorageProvider | `fastify.storage` | Created at startup via factory (Azure or local based on env), wrapped with `TenantScopedStorage` per request |
 | AppConfig | `fastify.config` | Created at startup from environment variables, immutable |
+| AuthProvider | `fastify.authProvider` | Created at startup (`DevAuthProvider` or JWT provider based on `AUTH_MODE`) |
+| TenantResolver | `fastify.tenantResolver` | Created at startup (`AutoTenantResolver`), resolves `TenantContext` per request |
 
 Routes access these via the Fastify instance. Services receive them as constructor parameters.
 
@@ -595,7 +609,7 @@ flowchart TB
     end
 
     subgraph CI_Backend["Backend Pipeline"]
-        BE_TEST["Test (Vitest, 48 tests)"]
+        BE_TEST_LABEL["Test (Vitest, 90 tests)"]
         BE_BUILD["Build (tsc)"]
         BE_DEPLOY["Deploy to Azure App Service"]
     end
@@ -610,7 +624,7 @@ flowchart TB
     PUSH -->|"all changes"| CI_Frontend
     PUSH -->|"server/** changes"| CI_Backend
     CI_Frontend --> FE_BUILD --> FE_DEPLOY --> SWA
-    CI_Backend --> BE_TEST --> BE_BUILD --> BE_DEPLOY --> APP
+    CI_Backend --> BE_TEST["Test (Vitest, 90 tests)"] --> BE_BUILD --> BE_DEPLOY --> APP
     APP --> PG
     APP --> BLOB
     SWA -.->|"/api/*"| APP
@@ -638,19 +652,19 @@ Browser → localhost:5173 (Vite)
 
 ---
 
-## Authentication Assumptions
+## Authentication and Authorization
 
-Authentication is **deferred** in Step 1. The current system uses:
+Authentication uses a provider-neutral `AuthProvider` interface. In development, `DevAuthProvider` validates the Bearer token against the configured `DEV_AUTH_TOKEN` environment variable — incorrect, empty, or missing tokens are rejected with 401. In production, a JWT-validating provider (vendor TBD) will be wired in via `AUTH_ISSUER`, `AUTH_AUDIENCE`, and `AUTH_JWKS_URI`.
 
-- `DEFAULT_ORG_ID` — a hardcoded UUID (`00000000-0000-0000-0000-000000000001`) for all data
-- `DEFAULT_USER` — the string `"system"` recorded as `created_by` / `updated_by`
+Tenant resolution is handled by `AutoTenantResolver`. For single-org users, the tenant is auto-resolved from their `OrganizationMembership`. For multi-org users, the client sends an `X-Organization-Id` header, which is validated against the user's active memberships. Supporting routes: `GET /me` (user identity) and `GET /me/organizations` (membership listing).
 
-The data model is **pre-wired for multi-user access**:
-- Every table includes `organization_id` with B-tree indexes
-- `Catalog`, `ImportBatch`, and `CanonicalProduct` have `created_by` / `updated_by` fields
-- `CanonicalProductHistory` has an `actor` field
+Authorization uses explicit role-to-permission mapping (never string comparison):
+- **Roles:** `organization_admin`, `operator`, `viewer`
+- **Permissions:** `catalog:read`, `catalog:write`, `product:read`, `import:execute`, `organization:manage`
 
-When authentication is added, the org ID and user identity will be resolved from the authenticated session rather than environment variables. No schema changes are required.
+Operational audit logging records security-relevant events (auth failures, catalog/import operations, org settings changes, authorization denials) in an append-only `AuditLog` table. Request correlation uses `X-Request-Id` headers propagated through requests, responses, and structured logs.
+
+The `AUTH_MODE` environment variable controls the mode (`development` or `production`). Development mode is blocked when `NODE_ENV=production`. `DEV_AUTH_TOKEN` is required in development mode.
 
 ---
 
@@ -660,14 +674,18 @@ The system supports logical multi-tenancy through `organization_id` on all prima
 
 | Table | Has `organization_id` | Indexed |
 |---|---|---|
-| `catalog` | Yes | `idx_catalog_org` |
-| `import_batch` | Yes | `idx_import_batch_org` |
-| `canonical_product` | Yes | `idx_product_org` |
+| `organization` | — (is the tenant) | — |
+| `user` | — (cross-tenant) | `idx_user_email` |
+| `organization_membership` | Yes (FK) | `uq_membership_org_user`, `idx_membership_user` |
+| `catalog` | Yes (FK) | `idx_catalog_org` |
+| `import_batch` | Yes (FK) | `idx_import_batch_org` |
+| `canonical_product` | Yes (FK) | `idx_product_org` |
 | `source_record` | No (via import_batch FK) | — |
 | `field_provenance` | No (via canonical_product FK) | — |
 | `canonical_product_history` | No (via canonical_product FK) | — |
+| `audit_log` | Yes (FK, nullable) | `idx_audit_log_org` |
 
-Tenant isolation is currently enforced at the application layer (all queries filter by `config.defaultOrgId`). When authentication is added, this filter will be driven by the authenticated user's organization.
+Tenant isolation is enforced at the application layer: every authenticated request resolves a `TenantContext` from the user's membership, and all queries filter by `tenantContext.organizationId`. Blob storage keys are prefixed with `organizations/{orgId}/` and enforced by `TenantScopedStorage`. PostgreSQL RLS is deferred as defense-in-depth (see MULTI_TENANCY.md).
 
 ---
 
@@ -680,29 +698,40 @@ All API endpoints are under `/api/v1`. The response envelope is consistent acros
 
 ### Endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/health` | Database connectivity check |
-| `GET` | `/catalogs` | List catalogs (auto-creates default if none) |
-| `POST` | `/catalogs` | Create a catalog |
-| `GET` | `/catalogs/:id` | Get catalog with computed stats |
-| `POST` | `/catalogs/:catalogId/imports` | Upload file, get preview + suggested mappings |
-| `GET` | `/catalogs/:catalogId/imports` | List imports for a catalog |
-| `GET` | `/imports/:id` | Get import batch details |
-| `POST` | `/imports/:id/confirm` | Execute import with field mappings |
-| `GET` | `/imports/:id/results` | Get import results with counts |
-| `GET` | `/catalogs/:catalogId/products` | List products (paginated, filterable, searchable) |
-| `GET` | `/products/:id` | Get single product |
-| `GET` | `/products/:id/source-records` | Get source records for a product |
-| `GET` | `/products/:id/provenance` | Get field provenance for a product |
-| `GET` | `/products/:id/history` | Get change history for a product |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/health` | Public | Database connectivity check |
+| `GET` | `/me` | Auth only | Current user identity |
+| `GET` | `/me/organizations` | Auth only | User's org memberships with roles |
+| `GET` | `/catalogs` | Tenant | List catalogs (auto-creates default if none) |
+| `POST` | `/catalogs` | Tenant | Create a catalog |
+| `GET` | `/catalogs/:id` | Tenant | Get catalog with computed stats |
+| `POST` | `/catalogs/:catalogId/imports` | Tenant | Upload file, get preview + suggested mappings |
+| `GET` | `/catalogs/:catalogId/imports` | Tenant | List imports for a catalog |
+| `GET` | `/imports/:id` | Tenant | Get import batch details |
+| `POST` | `/imports/:id/confirm` | Tenant | Execute import with field mappings |
+| `GET` | `/imports/:id/results` | Tenant | Get import results with counts |
+| `GET` | `/catalogs/:catalogId/products` | Tenant | List products (paginated, filterable, searchable) |
+| `GET` | `/products/:id` | Tenant | Get single product |
+| `GET` | `/products/:id/source-records` | Tenant | Get source records for a product |
+| `GET` | `/products/:id/provenance` | Tenant | Get field provenance for a product |
+| `GET` | `/products/:id/history` | Tenant | Get change history for a product |
+| `GET` | `/organization` | Tenant | Get current org details |
+| `PATCH` | `/organization` | Tenant | Update org settings (admin only) |
+| `GET` | `/organization/members` | Tenant | List org members |
+| `GET` | `/organization/audit-log` | Tenant | List audit log entries (admin only) |
 
 ### Error Codes
 
 | HTTP Status | Code | When |
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | Invalid request data |
-| 404 | `NOT_FOUND` | Resource does not exist |
+| 400 | `ORGANIZATION_REQUIRED` | Multi-org user without `X-Organization-Id` header |
+| 401 | `UNAUTHORIZED` | Missing or invalid authentication token |
+| 403 | `FORBIDDEN` | Insufficient role permissions |
+| 403 | `NO_ORGANIZATION` | User has no active memberships |
+| 403 | `INVALID_ORGANIZATION` | `X-Organization-Id` not in user's memberships |
+| 404 | `NOT_FOUND` | Resource does not exist (or belongs to another org) |
 | 413 | `FILE_TOO_LARGE` | Upload exceeds `MAX_UPLOAD_SIZE_MB` |
 | 422 | `PARSE_ERROR` | File is parseable but semantically invalid |
 | 500 | `INTERNAL_ERROR` | Unexpected server error (message suppressed in production) |
