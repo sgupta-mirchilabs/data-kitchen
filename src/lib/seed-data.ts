@@ -93,6 +93,8 @@ export const PRODUCTS: Product[] = [
     attributes: {
       title: { name: "Title", value: "SoundGear ProMax Wireless Headphones", sourceSystem: "Salsify", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-15" },
       brand: { name: "Brand", value: "SoundGear", sourceSystem: "Salsify", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-01" },
+      weight: { name: "Weight", value: 0.71, unit: "lbs", sourceSystem: "Salsify", confidenceScore: 0.96, autohealEligible: true, lastModified: "2026-07-15" },
+      country_of_origin: { name: "Country of Origin", value: "China", sourceSystem: "Salsify", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-01" },
       battery_life: { name: "Battery Life", value: "40 hours", sourceSystem: "Salsify", confidenceScore: 0.92, autohealEligible: true, lastModified: "2026-07-20" },
       bluetooth_version: { name: "Bluetooth Version", value: null, sourceSystem: "Salsify", confidenceScore: 0, autohealEligible: true, lastModified: "2026-07-01", issues: [{ type: "missing", message: "Required by Walmart electronics schema v3.2", channel: "Walmart", severity: "error" }] },
       noise_cancellation: { name: "Noise Cancellation Type", value: null, sourceSystem: "Salsify", confidenceScore: 0, autohealEligible: true, lastModified: "2026-07-01", issues: [{ type: "missing", message: "Required for Amazon Headphones product type", channel: "Amazon", severity: "error" }] },
@@ -117,6 +119,7 @@ export const PRODUCTS: Product[] = [
     attributes: {
       title: { name: "Title", value: "GreenDream Organic All-Purpose Fertilizer, 5 lb", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-25" },
       brand: { name: "Brand", value: "GreenDream", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-01" },
+      country_of_origin: { name: "Country of Origin", value: "United States", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-25" },
       weight: { name: "Net Weight", value: 5, unit: "lbs", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-25" },
       npk_ratio: { name: "NPK Ratio", value: "5-3-4", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-25" },
       organic_certified: { name: "OMRI Listed", value: true, sourceSystem: "Product360", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-25" },
@@ -138,6 +141,7 @@ export const PRODUCTS: Product[] = [
     attributes: {
       title: { name: "Title", value: "ProTech UltraShield Exterior Paint Navy Blue 1 Gal", sourceSystem: "ERP-SAP", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-20" },
       brand: { name: "Brand", value: "ProTech", sourceSystem: "ERP-SAP", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-01" },
+      weight: { name: "Weight", value: 11.2, unit: "lbs", sourceSystem: "ERP-SAP", confidenceScore: 0.93, autohealEligible: true, lastModified: "2026-07-20" },
       voc_content: { name: "VOC Content (g/L)", value: 48, sourceSystem: "ERP-SAP", confidenceScore: 0.85, autohealEligible: false, lastModified: "2026-07-20" },
       prop_65: { name: "Prop 65 Warning", value: null, sourceSystem: "ERP-SAP", confidenceScore: 0, autohealEligible: false, lastModified: "2026-07-01", issues: [{ type: "compliance", message: "California Prop 65 warning required for VOC-containing products", severity: "error" }] },
       coverage: { name: "Coverage (sq ft/gal)", value: 350, sourceSystem: "ERP-SAP", confidenceScore: 0.9, autohealEligible: true, lastModified: "2026-07-20" },
@@ -161,6 +165,8 @@ export const PRODUCTS: Product[] = [
     attributes: {
       title: { name: "Title", value: "Luxe Pro Series 1500W Commercial Blender, Stainless Steel", sourceSystem: "Syndigo", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-28" },
       brand: { name: "Brand", value: "Luxe Kitchen", sourceSystem: "Syndigo", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-01" },
+      weight: { name: "Weight", value: 9.4, unit: "lbs", sourceSystem: "Syndigo", confidenceScore: 0.97, autohealEligible: true, lastModified: "2026-07-28" },
+      country_of_origin: { name: "Country of Origin", value: "China", sourceSystem: "Syndigo", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-01" },
       wattage: { name: "Wattage", value: 1500, unit: "W", sourceSystem: "Syndigo", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-28" },
       capacity: { name: "Capacity", value: 64, unit: "oz", sourceSystem: "Syndigo", confidenceScore: 0.98, autohealEligible: true, lastModified: "2026-07-28" },
       noise_db: { name: "Noise Level (dB)", value: null, sourceSystem: "Syndigo", confidenceScore: 0, autohealEligible: true, lastModified: "2026-07-01", issues: [{ type: "missing", message: "Costco requires noise rating for high-wattage appliances", channel: "Costco", severity: "warning" }] },
@@ -182,6 +188,8 @@ export const PRODUCTS: Product[] = [
     attributes: {
       title: { name: "Title", value: "CraftBrew Elite 12-Cup Drip Coffee Maker, Matte Black", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-30" },
       brand: { name: "Brand", value: "CraftBrew", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-01" },
+      weight: { name: "Weight", value: 6.8, unit: "lbs", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-30" },
+      country_of_origin: { name: "Country of Origin", value: "Mexico", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: false, lastModified: "2026-07-30" },
       capacity: { name: "Capacity", value: 12, unit: "cups", sourceSystem: "Product360", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-30" },
       programmable: { name: "Programmable", value: true, sourceSystem: "Product360", confidenceScore: 1, autohealEligible: true, lastModified: "2026-07-30" },
     },

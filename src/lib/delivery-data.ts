@@ -45,6 +45,8 @@ const cleanTitle = (p: Product) =>
 export interface RetailerSchema {
   id: string;
   columns: string[];
+  /** Subset of columns the retailer will hard-reject on if blank */
+  required: string[];
   build: (p: Product) => Record<string, string>;
 }
 
@@ -52,6 +54,7 @@ export const SCHEMAS: Record<string, RetailerSchema> = {
   walmart: {
     id: "walmart",
     columns: ["gtin14", "productName", "brand", "shortDescription", "itemWeight", "countryOfOrigin", "color", "mainImageUrl"],
+    required: ["gtin14", "productName", "brand", "itemWeight", "countryOfOrigin", "mainImageUrl"],
     build: p => ({
       gtin14: p.gtin,
       productName: truncate(cleanTitle(p), 200),
@@ -66,6 +69,7 @@ export const SCHEMAS: Record<string, RetailerSchema> = {
   target: {
     id: "target",
     columns: ["tcin", "title", "brand", "material", "waterproof", "careInstructions", "countryOfOrigin"],
+    required: ["tcin", "title", "brand", "countryOfOrigin"],
     build: p => ({
       tcin: p.gtin.slice(-8),
       title: truncate(cleanTitle(p), 150),
@@ -79,6 +83,7 @@ export const SCHEMAS: Record<string, RetailerSchema> = {
   amazon: {
     id: "amazon",
     columns: ["external_product_id", "item_name", "brand_name", "product_type", "bullet_point1", "generic_keywords"],
+    required: ["external_product_id", "item_name", "brand_name", "product_type"],
     build: p => ({
       external_product_id: p.gtin.replace(/^0+/, ""),
       item_name: truncate(cleanTitle(p), 200),
@@ -91,6 +96,7 @@ export const SCHEMAS: Record<string, RetailerSchema> = {
   homedepot: {
     id: "homedepot",
     columns: ["modelNumber", "manufacturer", "title", "vocContent", "caProp65Warning"],
+    required: ["modelNumber", "manufacturer", "title"],
     build: p => ({
       modelNumber: p.sku.split("-").slice(1).join("-"),
       manufacturer: attr(p, "brand"),
@@ -104,6 +110,7 @@ export const SCHEMAS: Record<string, RetailerSchema> = {
   costco: {
     id: "costco",
     columns: ["itemNumber", "description", "brand", "netWeight", "unitCount", "noiseLevel"],
+    required: ["itemNumber", "description", "brand", "netWeight"],
     build: p => ({
       itemNumber: p.gtin.slice(-7),
       description: truncate(cleanTitle(p), 65),
@@ -130,7 +137,7 @@ export function shippable(retailerId: string) {
   const schema = SCHEMAS[retailerId];
   return PRODUCTS.map(p => {
     const rec = schema.build(p);
-    const missing = schema.columns.filter(c => !rec[c]);
+    const missing = schema.required.filter(c => !rec[c]);
     return { product: p, record: rec, missing, ready: missing.length === 0 };
   });
 }

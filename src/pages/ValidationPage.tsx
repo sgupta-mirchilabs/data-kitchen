@@ -231,7 +231,7 @@ export function ValidationPage() {
     return b.revenueUsd - a.revenueUsd;
   });
 
-  const bulk = open.filter(e => e.aiConfidence >= 95);
+  const bulk = open.filter(e => e.aiConfidence >= 85);
   const healAll = () => setDecisions(p => {
     const next = { ...p };
     bulk.forEach(e => { next[e.id] = "approved"; });
@@ -260,7 +260,7 @@ export function ValidationPage() {
               display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", borderRadius: 6,
               background: "var(--mirchi)", border: "none", color: "white", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
             }}>
-              <Zap size={12} strokeWidth={2.5} /> Auto-heal {bulk.length} at 95%+
+              <Zap size={12} strokeWidth={2.5} /> Auto-heal {bulk.length} at 85%+
             </button>
           )}
         </div>
