@@ -219,5 +219,7 @@ export const CATALOG_STATS = {
   importDate: "2026-07-31T08:00:00Z",
   sourceFile: "Product360_Export_2026-07-31.xlsx",
   totalAttributes: 847,
-  attributeIssues: 9,
+  attributeIssues: PRODUCTS.reduce((s, p) =>
+    s + Object.values(p.attributes).filter(a => a.issues?.length).length
+      + p.images.filter(i => !i.compliant).length, 0),
 };
