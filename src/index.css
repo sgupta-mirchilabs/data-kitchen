@@ -49,3 +49,6 @@ input, select, textarea { font-family: inherit; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
 ::selection { background: var(--mirchi-glow); color: var(--text-primary); }
+
+@keyframes dk-spin-kf { to { transform: rotate(360deg); } }
+.dk-spin { animation: dk-spin-kf 0.9s linear infinite; }
