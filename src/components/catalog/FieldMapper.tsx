@@ -105,7 +105,7 @@ export function FieldMapper({ headers, suggestedMappings, onConfirm, onBack }: P
               </select>
 
               <div style={{ width: 20, display: "flex", justifyContent: "center" }}>
-                {mapped && wasSuggested && <Sparkles size={12} color="var(--amber)" title="Auto-suggested" />}
+                {mapped && wasSuggested && <Sparkles size={12} color="var(--amber)" aria-label="Auto-suggested" />}
                 {mapped && !wasSuggested && <CheckCircle2 size={12} color="var(--green)" />}
                 {!mapped && field.required && <AlertTriangle size={12} color="var(--red)" />}
               </div>

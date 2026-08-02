@@ -1,4 +1,4 @@
-import { CheckCircle2, AlertTriangle, XCircle, Clock, FileSpreadsheet, Braces } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, FileSpreadsheet, Braces } from "lucide-react";
 import type { ImportBatch } from "../../lib/catalog-repository";
 
 interface Props {
@@ -12,7 +12,7 @@ function StatusIcon({ status }: { status: string }) {
   return <Clock size={12} color="var(--text-muted)" />;
 }
 
-export function ImportHistory({ imports, onClose }: Props) {
+export function ImportHistory({ imports }: Props) {
   if (imports.length === 0) {
     return (
       <div style={{ padding: 32, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>

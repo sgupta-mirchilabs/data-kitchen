@@ -17,8 +17,6 @@ import {
   type ImportBatch,
 } from "../lib/catalog-repository";
 
-type DataQualityStatus = "complete" | "missing_core_fields" | "parse_warning" | "needs_review";
-
 function QualityBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; color: string; bg: string; icon: typeof CheckCircle2 }> = {
     complete: { label: "Complete", color: "var(--green)", bg: "var(--green-dim)", icon: CheckCircle2 },
