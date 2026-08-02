@@ -1,0 +1,35 @@
+[
+  {
+    "SKU": "NF-JKT-APEX-M-BLK",
+    "Product Name": "NorthFace APEX Flex GTX 2.0 Jacket",
+    "Brand": "The North Face",
+    "GTIN": "00012345678901",
+    "Category": "Apparel",
+    "Item Weight": "1.82 LB",
+    "Country of Origin": "Vietnam",
+    "Short Description": "Waterproof shell jacket with GORE-TEX technology",
+    "Material": "100% Nylon GORE-TEX"
+  },
+  {
+    "SKU": "SG-HDPH-PRO-MAX-WHT",
+    "Product Name": "SoundGear ProMax Wireless Headphones",
+    "Brand": "SoundGear",
+    "GTIN": "00098765432109",
+    "Category": "Electronics",
+    "Item Weight": "0.71 LB",
+    "Country of Origin": "China",
+    "Short Description": "Premium noise-cancelling wireless headphones",
+    "Material": ""
+  },
+  {
+    "SKU": "GD-FERT-ORG-5LB",
+    "Product Name": "GreenDream Organic All-Purpose Fertilizer 5lb",
+    "Brand": "GreenDream",
+    "GTIN": "00056789012345",
+    "Category": "Garden",
+    "Item Weight": "5 LB",
+    "Country of Origin": "United States",
+    "Short Description": "OMRI-listed organic fertilizer for all plants",
+    "Material": "Organic blend"
+  }
+]

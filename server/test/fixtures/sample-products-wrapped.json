@@ -1,0 +1,18 @@
+{
+  "products": [
+    {
+      "SKU": "NF-JKT-APEX-M-BLK",
+      "Product Name": "NorthFace APEX Flex GTX 2.0 Jacket",
+      "Brand": "The North Face",
+      "GTIN": "00012345678901",
+      "Category": "Apparel"
+    },
+    {
+      "SKU": "SG-HDPH-PRO-MAX-WHT",
+      "Product Name": "SoundGear ProMax Wireless Headphones",
+      "Brand": "SoundGear",
+      "GTIN": "00098765432109",
+      "Category": "Electronics"
+    }
+  ]
+}

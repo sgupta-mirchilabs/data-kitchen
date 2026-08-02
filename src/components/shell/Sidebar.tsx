@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 
 const NAV = [
-  { href: "/intake", label: "Catalog Intake", Icon: UploadCloud, badge: null, badgeColor: "" },
+  { href: "/intake", label: "Catalog Workspace", Icon: UploadCloud, badge: null, badgeColor: "" },
   { href: "/readiness", label: "Retailer Readiness", Icon: ShoppingBag, badge: null, badgeColor: "" },
   { href: "/mapping", label: "Mapping Studio", Icon: GitMerge, badge: "3", badgeColor: "default" },
   { href: "/validation", label: "Validation & Exceptions", Icon: AlertTriangle, badge: "12", badgeColor: "red" },

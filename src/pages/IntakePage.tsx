@@ -1,163 +1,111 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  UploadCloud, FileSpreadsheet, CheckCircle2, AlertTriangle,
-  XCircle, Clock, ChevronRight, Search, Filter, RefreshCw,
-  ArrowUpRight, Database, Layers, Package, ImageOff,
+  UploadCloud, CheckCircle2, AlertTriangle,
+  XCircle, Clock, ChevronRight, Search,
+  Package, Database, FileSpreadsheet, History,
 } from "lucide-react";
 import { AppShell } from "../components/shell/AppShell";
-import { PRODUCTS, CATALOG_STATS, type Product, type ProductStatus } from "../lib/seed-data";
-import { Link } from "react-router-dom";
+import { ImportWizard } from "../components/catalog/ImportWizard";
+import { ProductDetail } from "../components/catalog/ProductDetail";
+import { ImportHistory } from "../components/catalog/ImportHistory";
+import {
+  getCatalogRepository,
+  type CatalogRepository,
+  type CatalogProduct,
+  type CatalogStats,
+  type ImportBatch,
+} from "../lib/catalog-repository";
 
-function StatusBadge({ status }: { status: ProductStatus }) {
-  const map = {
-    ready: { label: "Ready", color: "var(--green)", bg: "var(--green-dim)" },
-    needs_review: { label: "Needs Review", color: "var(--amber)", bg: "var(--amber-dim)" },
-    blocked: { label: "Blocked", color: "var(--red)", bg: "var(--red-dim)" },
-    pending: { label: "Pending", color: "var(--text-muted)", bg: "var(--surface-overlay)" },
+type DataQualityStatus = "complete" | "missing_core_fields" | "parse_warning" | "needs_review";
+
+function QualityBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; color: string; bg: string; icon: typeof CheckCircle2 }> = {
+    complete: { label: "Complete", color: "var(--green)", bg: "var(--green-dim)", icon: CheckCircle2 },
+    missing_core_fields: { label: "Missing Fields", color: "var(--red)", bg: "var(--red-dim)", icon: XCircle },
+    parse_warning: { label: "Parse Warning", color: "var(--amber)", bg: "var(--amber-dim)", icon: AlertTriangle },
+    needs_review: { label: "Needs Review", color: "var(--amber)", bg: "var(--amber-dim)", icon: AlertTriangle },
+    // Demo mode statuses
+    ready: { label: "Ready", color: "var(--green)", bg: "var(--green-dim)", icon: CheckCircle2 },
+    blocked: { label: "Blocked", color: "var(--red)", bg: "var(--red-dim)", icon: XCircle },
+    pending: { label: "Pending", color: "var(--text-muted)", bg: "var(--surface-overlay)", icon: Clock },
   };
-  const s = map[status];
+  const s = map[status] ?? map.needs_review;
+  const Icon = s.icon;
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 4, fontSize: 11, fontWeight: 600, color: s.color, background: s.bg }}>
-      {status === "ready" && <CheckCircle2 size={10} />}
-      {status === "needs_review" && <AlertTriangle size={10} />}
-      {status === "blocked" && <XCircle size={10} />}
-      {status === "pending" && <Clock size={10} />}
-      {s.label}
+      <Icon size={10} /> {s.label}
     </span>
   );
 }
 
-function ReadinessBar({ score }: { score: number }) {
-  const color = score >= 90 ? "var(--green)" : score >= 60 ? "var(--amber)" : "var(--red)";
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div style={{ width: 72, height: 4, borderRadius: 2, background: "var(--surface-overlay)", overflow: "hidden" }}>
-        <div style={{ width: `${score}%`, height: "100%", borderRadius: 2, background: color, transition: "width 0.4s ease" }} />
-      </div>
-      <span style={{ fontSize: 11, fontWeight: 600, color, minWidth: 28 }}>{score}%</span>
-    </div>
-  );
-}
-
-function SourceTag({ source }: { source: string }) {
-  const colors: Record<string, { color: string; bg: string }> = {
-    Product360: { color: "#60a5fa", bg: "rgba(96,165,250,0.1)" },
-    Salsify: { color: "#a78bfa", bg: "rgba(167,139,250,0.1)" },
-    Syndigo: { color: "#34d399", bg: "rgba(52,211,153,0.1)" },
-    "ERP-SAP": { color: "#fb923c", bg: "rgba(251,146,60,0.1)" },
-  };
-  const c = colors[source] ?? { color: "var(--text-muted)", bg: "var(--surface-overlay)" };
-  return (
-    <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, color: c.color, background: c.bg, letterSpacing: "0.03em" }}>
-      {source}
-    </span>
-  );
-}
-
-function ChannelDots({ channels }: { channels: Product["channels"] }) {
-  return (
-    <div style={{ display: "flex", gap: 3 }}>
-      {channels.map((ch) => {
-        const color = ch.status === "live" ? "var(--green)" : ch.status === "rejected" ? "var(--red)" : ch.status === "pending" ? "var(--amber)" : "var(--border)";
-        return <div key={ch.channelId} title={`${ch.channel}: ${ch.status}`} style={{ width: 6, height: 6, borderRadius: "50%", background: color }} />;
-      })}
-    </div>
-  );
-}
-
-function UploadZone({ onImported }: { onImported: () => void }) {
-  const [dragging, setDragging] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [done, setDone] = useState(false);
-
-  async function simulate() {
-    if (importing || done) return;
-    setImporting(true);
-    await new Promise(r => setTimeout(r, 1800));
-    setDone(true);
-    await new Promise(r => setTimeout(r, 600));
-    onImported();
-  }
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
-      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => { e.preventDefault(); setDragging(false); simulate(); }}
-      onClick={simulate}
-      style={{
-        border: `2px dashed ${dragging ? "var(--mirchi)" : "var(--border)"}`,
-        borderRadius: 10, padding: "48px 24px", textAlign: "center" as const,
-        cursor: importing || done ? "default" : "pointer",
-        background: dragging ? "var(--mirchi-dim)" : "var(--surface)",
-        transition: "all 0.15s ease", display: "flex", flexDirection: "column" as const,
-        alignItems: "center", gap: 12,
-      }}
-    >
-      {!importing && !done && (
-        <>
-          <div style={{ width: 48, height: 48, borderRadius: 12, background: "var(--surface-raised)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <UploadCloud size={22} color="var(--text-muted)" />
-          </div>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)", marginBottom: 4 }}>Drop your Product360 export here</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>.xlsx · .csv · .json · PIM API export</div>
-          </div>
-          <div style={{ display: "flex", gap: 16 }}>
-            {["Product360", "Salsify", "Syndigo", "ERP/SAP", "Custom CSV"].map(s => (
-              <span key={s} style={{ fontSize: 11, color: "var(--text-muted)" }}>{s}</span>
-            ))}
-          </div>
-          <div style={{ marginTop: 4, padding: "6px 16px", borderRadius: 6, background: "var(--mirchi)", color: "white", fontSize: 12, fontWeight: 600, display: "inline-block" }}>
-            Browse file
-          </div>
-        </>
-      )}
-      {importing && !done && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 16 }}>
-          <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
-            <RefreshCw size={24} color="var(--mirchi)" />
-          </motion.div>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)", marginBottom: 4 }}>Importing Product360_Export_2026-07-31.xlsx</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Profiling attributes · Detecting source schema · Calculating readiness…</div>
-          </div>
-        </motion.div>
-      )}
-      {done && (
-        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 8 }}>
-          <CheckCircle2 size={32} color="var(--green)" />
-          <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text-primary)" }}>6 products imported successfully</div>
-        </motion.div>
-      )}
-    </motion.div>
-  );
-}
-
-const STATS = [
-  { icon: FileSpreadsheet, label: "Source File", value: "Product360_Export_2026-07-31.xlsx", small: true, warn: false, good: false },
-  { icon: Package, label: "Products", value: String(CATALOG_STATS.totalProducts), small: false, warn: false, good: false },
-  { icon: Database, label: "Attributes", value: String(CATALOG_STATS.totalAttributes), small: false, warn: false, good: false },
-  { icon: Layers, label: "Avg Readiness", value: `${CATALOG_STATS.avgReadinessScore}%`, small: false, warn: false, good: false },
-  { icon: AlertTriangle, label: "Issues", value: String(CATALOG_STATS.attributeIssues), small: false, warn: true, good: false },
-  { icon: CheckCircle2, label: "Live Channels", value: String(CATALOG_STATS.liveChannels), small: false, warn: false, good: true },
-];
+type View = "catalog" | "importing" | "history";
 
 export function IntakePage() {
-  const [imported, setImported] = useState(true);
+  const [repo, setRepo] = useState<CatalogRepository | null>(null);
+  const [catalogId, setCatalogId] = useState<string | null>(null);
+  const [products, setProducts] = useState<CatalogProduct[]>([]);
+  const [stats, setStats] = useState<CatalogStats | null>(null);
+  const [imports, setImports] = useState<ImportBatch[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<View>("catalog");
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const filtered = PRODUCTS.filter(p => {
-    const ms = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase()) || p.brand.toLowerCase().includes(search.toLowerCase());
-    const mf = filterStatus === "all" || p.status === filterStatus;
-    return ms && mf;
-  });
+  const loadData = useCallback(async (repository: CatalogRepository, catId: string) => {
+    const [productResult, catalogStats, importList] = await Promise.all([
+      repository.getProducts(catId, { status: filterStatus, search: search || undefined }),
+      repository.getCatalogStats(catId),
+      repository.getImports(catId),
+    ]);
+    setProducts(productResult.products);
+    setTotal(productResult.total);
+    setStats(catalogStats);
+    setImports(importList);
+    setLoading(false);
+  }, [filterStatus, search]);
 
-  const selected = PRODUCTS.find(p => p.id === selectedId) ?? null;
+  useEffect(() => {
+    async function init() {
+      try {
+        const repository = await getCatalogRepository();
+        setRepo(repository);
+        const catalogs = await repository.getCatalogs();
+        if (catalogs.length > 0) {
+          setCatalogId(catalogs[0].id);
+          await loadData(repository, catalogs[0].id);
+        } else {
+          setLoading(false);
+        }
+      } catch {
+        setLoading(false);
+      }
+    }
+    init();
+  }, [loadData]);
+
+  useEffect(() => {
+    if (repo && catalogId) {
+      loadData(repo, catalogId);
+    }
+  }, [filterStatus, search, repo, catalogId, loadData]);
+
+  function handleImportComplete() {
+    if (repo && catalogId) loadData(repo, catalogId);
+  }
+
+  const selected = products.find((p) => p.id === selectedId) ?? null;
+  const isEmpty = !loading && products.length === 0 && filterStatus === "all" && !search;
+
+  const STATUSES: Array<{ key: string; label: string }> = [
+    { key: "all", label: "All" },
+    { key: "complete", label: "Complete" },
+    { key: "missing_core_fields", label: "Missing Fields" },
+    { key: "parse_warning", label: "Parse Warning" },
+    { key: "needs_review", label: "Needs Review" },
+  ];
 
   return (
     <AppShell>
@@ -167,163 +115,290 @@ export function IntakePage() {
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
               <UploadCloud size={14} color="var(--mirchi)" />
-              <span style={{ fontSize: 11, color: "var(--mirchi)", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" as const }}>Step 1 of 6</span>
+              <span style={{ fontSize: 11, color: "var(--mirchi)", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                Step 1 of 6
+              </span>
+              {repo && (
+                <span style={{
+                  fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 10,
+                  color: repo.mode === "demo" ? "var(--amber)" : "var(--green)",
+                  background: repo.mode === "demo" ? "var(--amber-dim)" : "var(--green-dim)",
+                  letterSpacing: "0.06em", textTransform: "uppercase",
+                }}>
+                  {repo.mode}
+                </span>
+              )}
             </div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>Catalog Intake</h1>
-            <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>Import product data from your PIM, ERP, or data export. Data Kitchen profiles attributes and identifies gaps before retailer submission.</p>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>
+              Catalog Workspace
+            </h1>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+              Import and manage product data. Data Kitchen preserves original source records and tracks field provenance.
+            </p>
           </div>
-          {imported && (
-            <button onClick={() => setImported(false)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-raised)", color: "var(--text-secondary)", fontSize: 12, fontWeight: 500, cursor: "pointer" }}>
-              <UploadCloud size={13} /> New Import
-            </button>
-          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            {view === "catalog" && (
+              <>
+                <button
+                  onClick={() => setView("history")}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "7px 14px",
+                    borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-raised)",
+                    color: "var(--text-secondary)", fontSize: 12, fontWeight: 500, cursor: "pointer",
+                  }}
+                >
+                  <History size={13} /> Import History
+                </button>
+                {repo?.mode === "live" && catalogId && (
+                  <button
+                    onClick={() => setView("importing")}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6, padding: "7px 14px",
+                      borderRadius: 6, border: "none", background: "var(--mirchi)",
+                      color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                    }}
+                  >
+                    <UploadCloud size={13} /> Import Products
+                  </button>
+                )}
+              </>
+            )}
+            {view !== "catalog" && (
+              <button
+                onClick={() => setView("catalog")}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "7px 14px",
+                  borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-raised)",
+                  color: "var(--text-secondary)", fontSize: 12, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                Back to Catalog
+              </button>
+            )}
+          </div>
         </div>
 
         <AnimatePresence mode="wait">
-          {!imported ? (
-            <motion.div key="upload" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <UploadZone onImported={() => setImported(true)} />
+          {/* Import Wizard */}
+          {view === "importing" && catalogId && (
+            <motion.div key="importing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <ImportWizard
+                catalogId={catalogId}
+                onClose={() => setView("catalog")}
+                onImportComplete={handleImportComplete}
+              />
             </motion.div>
-          ) : (
-            <motion.div key="catalog" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-              {/* Stats bar */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 1, background: "var(--border)", borderRadius: 8, overflow: "hidden", marginBottom: 20, border: "1px solid var(--border)" }}>
-                {STATS.map((s, i) => {
-                  const Icon = s.icon;
-                  return (
-                    <div key={i} style={{ background: "var(--surface)", padding: "12px 14px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}>
-                        <Icon size={11} color={s.warn ? "var(--amber)" : s.good ? "var(--green)" : "var(--text-muted)"} />
-                        <span style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" as const }}>{s.label}</span>
-                      </div>
-                      <div style={{ fontSize: s.small ? 11 : 18, fontWeight: 700, color: s.warn ? "var(--amber)" : s.good ? "var(--green)" : "var(--text-primary)", letterSpacing: s.small ? 0 : "-0.02em", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {s.value}
-                      </div>
+          )}
+
+          {/* Import History */}
+          {view === "history" && (
+            <motion.div key="history" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+              <ImportHistory imports={imports} onClose={() => setView("catalog")} />
+              {imports.length === 0 && repo?.mode === "demo" && (
+                <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
+                  Import history is not available in demo mode.
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {/* Catalog View */}
+          {view === "catalog" && (
+            <motion.div key="catalog" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+              {loading ? (
+                <div style={{ padding: 48, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+                  Loading catalog...
+                </div>
+              ) : isEmpty ? (
+                /* Empty state for live mode */
+                <div style={{
+                  border: "2px dashed var(--border)", borderRadius: 10,
+                  padding: "64px 24px", textAlign: "center",
+                  display: "flex", flexDirection: "column", alignItems: "center", gap: 16,
+                }}>
+                  <div style={{
+                    width: 56, height: 56, borderRadius: 14, background: "var(--surface-raised)",
+                    border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    <Package size={24} color="var(--text-muted)" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)", marginBottom: 6 }}>
+                      No products yet
                     </div>
-                  );
-                })}
-              </div>
-
-              {/* Filters */}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 10px" }}>
-                  <Search size={13} color="var(--text-muted)" />
-                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products, SKUs, brands…" style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 12, color: "var(--text-primary)" }} />
-                </div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  {["all", "ready", "needs_review", "blocked", "pending"].map(f => (
-                    <button key={f} onClick={() => setFilterStatus(f)} style={{ padding: "5px 10px", borderRadius: 5, border: "1px solid", borderColor: filterStatus === f ? "var(--mirchi-glow)" : "var(--border)", background: filterStatus === f ? "var(--mirchi-dim)" : "var(--surface)", color: filterStatus === f ? "var(--mirchi)" : "var(--text-muted)", fontSize: 11, fontWeight: filterStatus === f ? 600 : 400, cursor: "pointer" }}>
-                      {f === "needs_review" ? "Needs Review" : f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}
-                    </button>
-                  ))}
-                </div>
-                <button style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text-muted)", fontSize: 11, cursor: "pointer" }}>
-                  <Filter size={12} /> Filters
-                </button>
-              </div>
-
-              {/* Table */}
-              <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden", background: "var(--surface)" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 90px 110px 110px 80px 100px 24px", padding: "8px 16px", borderBottom: "1px solid var(--border)", background: "var(--surface-raised)" }}>
-                  {["Product / SKU", "Source", "Status", "Readiness", "Channels", "Modified", ""].map(col => (
-                    <div key={col} style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" as const }}>{col}</div>
-                  ))}
-                </div>
-
-                <AnimatePresence>
-                  {filtered.map((p, i) => (
-                    <motion.div
-                      key={p.id}
-                      initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                      transition={{ delay: i * 0.03 }}
-                      onClick={() => setSelectedId(selectedId === p.id ? null : p.id)}
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", maxWidth: 400, margin: "0 auto" }}>
+                      Import a CSV or JSON file to start building your product catalog. Data Kitchen will parse, normalize, and preserve your source data.
+                    </div>
+                  </div>
+                  {repo?.mode === "live" && catalogId && (
+                    <button
+                      onClick={() => setView("importing")}
                       style={{
-                        display: "grid", gridTemplateColumns: "2fr 90px 110px 110px 80px 100px 24px",
-                        padding: "10px 16px", borderBottom: i < filtered.length - 1 ? "1px solid var(--border-subtle)" : "none",
-                        cursor: "pointer", alignItems: "center",
-                        background: selectedId === p.id ? "var(--surface-raised)" : "transparent",
-                        transition: "background 0.1s ease",
+                        display: "flex", alignItems: "center", gap: 6, padding: "9px 20px",
+                        borderRadius: 6, border: "none", background: "var(--mirchi)",
+                        color: "white", fontSize: 13, fontWeight: 600, cursor: "pointer",
                       }}
                     >
-                      <div style={{ paddingRight: 12 }}>
-                        <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis", maxWidth: 340 }}>{p.name}</div>
-                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
-                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>{p.sku}</span>
-                          <span style={{ fontSize: 10, color: "var(--border)" }}>·</span>
-                          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{p.subCategory.split(" > ").pop()}</span>
-                        </div>
-                      </div>
-                      <div><SourceTag source={p.sourceSystem} /></div>
-                      <div><StatusBadge status={p.status} /></div>
-                      <div><ReadinessBar score={p.readinessScore} /></div>
-                      <div><ChannelDots channels={p.channels} /></div>
-                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                        {new Date(p.lastModified).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                      </div>
-                      <div>
-                        <ChevronRight size={12} color="var(--text-muted)" style={{ transform: selectedId === p.id ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
-                      </div>
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-
-                {filtered.length === 0 && (
-                  <div style={{ padding: 32, textAlign: "center" as const, color: "var(--text-muted)", fontSize: 12 }}>No products match.</div>
-                )}
-              </div>
-
-              {/* Expanded detail */}
-              <AnimatePresence>
-                {selected && (
-                  <motion.div key={selected.id} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} style={{ overflow: "hidden", marginTop: 1, border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-raised)" }}>
-                    <div style={{ padding: "16px 20px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
-                        <div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>{selected.name}</div>
-                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>GTIN: {selected.gtin} · Brand: {selected.brand}</div>
-                        </div>
-                        <Link to="/readiness" style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 6, background: "var(--mirchi)", color: "white", fontSize: 11, fontWeight: 600 }}>
-                          Check Readiness <ArrowUpRight size={11} />
-                        </Link>
-                      </div>
-
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
-                        {Object.values(selected.attributes).map(attr => (
-                          <div key={attr.name} style={{ padding: "10px 12px", borderRadius: 6, border: `1px solid ${attr.issues?.length ? "var(--red)" : "var(--border-subtle)"}`, background: attr.issues?.length ? "var(--red-dim)" : "var(--surface)" }}>
-                            <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4, letterSpacing: "0.04em", textTransform: "uppercase" as const }}>{attr.name}</div>
-                            <div style={{ fontSize: 12, fontWeight: 500, color: attr.value !== null ? "var(--text-primary)" : "var(--text-muted)" }}>
-                              {attr.value !== null ? `${attr.value}${attr.unit ? " " + attr.unit : ""}` : "— not set —"}
+                      <UploadCloud size={14} /> Import Products
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {/* Stats bar */}
+                  {stats && (
+                    <div style={{
+                      display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 1,
+                      background: "var(--border)", borderRadius: 8, overflow: "hidden",
+                      marginBottom: 20, border: "1px solid var(--border)",
+                    }}>
+                      {[
+                        { icon: Package, label: "Products", value: String(stats.totalProducts) },
+                        { icon: FileSpreadsheet, label: "With SKU", value: String(stats.productsWithSku) },
+                        { icon: Database, label: "With GTIN", value: String(stats.productsWithGtin) },
+                        { icon: AlertTriangle, label: "Missing Core", value: String(stats.missingCoreFields), warn: stats.missingCoreFields > 0 },
+                        { icon: CheckCircle2, label: "Sources", value: stats.sourceSystems.length > 0 ? stats.sourceSystems.join(", ") : "—", small: true },
+                      ].map((s, i) => {
+                        const Icon = s.icon;
+                        return (
+                          <div key={i} style={{ background: "var(--surface)", padding: "12px 14px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}>
+                              <Icon size={11} color={(s as any).warn ? "var(--amber)" : "var(--text-muted)"} />
+                              <span style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>{s.label}</span>
                             </div>
-                            {attr.issues?.map((issue, j) => (
-                              <div key={j} style={{ fontSize: 10, color: "var(--red)", marginTop: 4, display: "flex", alignItems: "flex-start", gap: 4 }}>
-                                <AlertTriangle size={9} style={{ marginTop: 1, flexShrink: 0 }} />
-                                {issue.message}
-                              </div>
-                            ))}
+                            <div style={{
+                              fontSize: (s as any).small ? 11 : 18, fontWeight: 700,
+                              color: (s as any).warn ? "var(--amber)" : "var(--text-primary)",
+                              letterSpacing: (s as any).small ? 0 : "-0.02em",
+                              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                            }}>
+                              {s.value}
+                            </div>
                           </div>
-                        ))}
-                      </div>
-
-                      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                        {selected.images.map((img, j) => (
-                          <div key={j} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 6, border: `1px solid ${img.compliant ? "var(--border-subtle)" : "var(--red)"}`, background: img.compliant ? "var(--surface)" : "var(--red-dim)", fontSize: 11, color: img.compliant ? "var(--text-secondary)" : "var(--red)" }}>
-                            {img.compliant ? <CheckCircle2 size={11} color="var(--green)" /> : <ImageOff size={11} />}
-                            {img.type} · {img.width}×{img.height} · {img.sizeKb}kb{!img.compliant && " · Non-compliant"}
-                          </div>
-                        ))}
-                      </div>
+                        );
+                      })}
                     </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                  )}
 
-              {/* Footer CTA */}
-              <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface)" }}>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>6 products imported · {CATALOG_STATS.attributeIssues} attribute issues detected</div>
-                <Link to="/readiness" style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", borderRadius: 6, background: "var(--mirchi)", color: "white", fontSize: 12, fontWeight: 600 }}>
-                  Continue to Retailer Readiness <ChevronRight size={13} />
-                </Link>
-              </div>
+                  {/* Filters */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                    <div style={{
+                      flex: 1, display: "flex", alignItems: "center", gap: 8,
+                      background: "var(--surface)", border: "1px solid var(--border)",
+                      borderRadius: 6, padding: "6px 10px",
+                    }}>
+                      <Search size={13} color="var(--text-muted)" />
+                      <input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Search products, SKUs, brands..."
+                        style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 12, color: "var(--text-primary)" }}
+                      />
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {STATUSES.map((f) => (
+                        <button
+                          key={f.key}
+                          onClick={() => setFilterStatus(f.key)}
+                          style={{
+                            padding: "5px 10px", borderRadius: 5, border: "1px solid",
+                            borderColor: filterStatus === f.key ? "var(--mirchi-glow)" : "var(--border)",
+                            background: filterStatus === f.key ? "var(--mirchi-dim)" : "var(--surface)",
+                            color: filterStatus === f.key ? "var(--mirchi)" : "var(--text-muted)",
+                            fontSize: 11, fontWeight: filterStatus === f.key ? 600 : 400, cursor: "pointer",
+                          }}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Product table */}
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden", background: "var(--surface)" }}>
+                    <div style={{
+                      display: "grid", gridTemplateColumns: "2fr 120px 120px 140px 100px 24px",
+                      padding: "8px 16px", borderBottom: "1px solid var(--border)", background: "var(--surface-raised)",
+                    }}>
+                      {["Product / SKU", "Brand", "Category", "Data Quality", "Modified", ""].map((col) => (
+                        <div key={col} style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>{col}</div>
+                      ))}
+                    </div>
+
+                    {products.map((p, i) => (
+                        <div
+                          key={p.id}
+                          onClick={() => setSelectedId(selectedId === p.id ? null : p.id)}
+                          style={{
+                            display: "grid", gridTemplateColumns: "2fr 120px 120px 140px 100px 24px",
+                            padding: "10px 16px", borderBottom: i < products.length - 1 ? "1px solid var(--border-subtle)" : "none",
+                            cursor: "pointer", alignItems: "center",
+                            background: selectedId === p.id ? "var(--surface-raised)" : "transparent",
+                            transition: "background 0.1s ease",
+                          }}
+                        >
+                          <div style={{ paddingRight: 12 }}>
+                            <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 340 }}>
+                              {p.productName ?? "Unnamed Product"}
+                            </div>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
+                              <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>
+                                {p.sku ?? "—"}
+                              </span>
+                              {p.gtin && (
+                                <>
+                                  <span style={{ fontSize: 10, color: "var(--border)" }}>·</span>
+                                  <span style={{ fontSize: 10, color: "var(--text-muted)" }}>GTIN: {p.gtin}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                            {p.brand ?? "—"}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                            {p.category ?? "—"}
+                          </div>
+                          <div>
+                            <QualityBadge status={p.dataQualityStatus} />
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            {new Date(p.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                          </div>
+                          <div>
+                            <ChevronRight size={12} color="var(--text-muted)" style={{ transform: selectedId === p.id ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
+                          </div>
+                        </div>
+                      ))}
+
+                    {products.length === 0 && (
+                      <div style={{ padding: 32, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>No products match.</div>
+                    )}
+                  </div>
+
+                  {/* Product detail */}
+                  <AnimatePresence>
+                    {selected && repo && (
+                      <ProductDetail
+                        key={selected.id}
+                        product={selected}
+                        repo={repo}
+                        onClose={() => setSelectedId(null)}
+                      />
+                    )}
+                  </AnimatePresence>
+
+                  {/* Footer */}
+                  <div style={{
+                    marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "12px 16px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface)",
+                  }}>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      {total} products{stats?.lastImport ? ` · Last import: ${new Date(stats.lastImport.uploadedAt).toLocaleDateString()}` : ""}
+                    </div>
+                  </div>
+                </>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

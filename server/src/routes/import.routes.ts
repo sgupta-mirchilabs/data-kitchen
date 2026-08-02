@@ -1,0 +1,165 @@
+import type { FastifyInstance } from "fastify";
+import "../types.js";
+import { ImportService } from "../services/import.service.js";
+import { suggestFieldMappings, type FieldMapping } from "../services/normalizer.js";
+import { ValidationError, FileTooLargeError } from "../errors/api-errors.js";
+
+export async function importRoutes(app: FastifyInstance) {
+  const importService = new ImportService(app.prisma, app.storage, app.config);
+
+  app.post<{ Params: { catalogId: string } }>(
+    "/catalogs/:catalogId/imports",
+    async (request, reply) => {
+      const { catalogId } = request.params;
+      const orgId = app.config.defaultOrgId;
+
+      const catalog = await app.prisma.catalog.findUnique({
+        where: { id: catalogId },
+      });
+      if (!catalog) {
+        return reply.status(404).send({
+          error: { code: "NOT_FOUND", message: `Catalog not found: ${catalogId}` },
+        });
+      }
+
+      const file = await request.file();
+      if (!file) {
+        throw new ValidationError("No file provided. Upload a CSV or JSON file.");
+      }
+
+      const buffer = await file.toBuffer();
+
+      if (buffer.length === 0) {
+        throw new ValidationError("Uploaded file is empty");
+      }
+
+      const maxBytes = app.config.upload.maxFileSizeMb * 1024 * 1024;
+      if (buffer.length > maxBytes) {
+        throw new FileTooLargeError(app.config.upload.maxFileSizeMb);
+      }
+
+      const sourceSystem = (request.body as Record<string, unknown>)?.source_system as string | undefined;
+
+      const result = await importService.uploadAndPreview(
+        catalogId,
+        orgId,
+        file.filename,
+        buffer,
+        sourceSystem,
+      );
+
+      const suggestedMappings = suggestFieldMappings(result.preview.headers);
+
+      return reply.status(201).send({
+        data: {
+          importBatchId: result.importBatchId,
+          preview: result.preview,
+          suggestedMappings,
+        },
+      });
+    },
+  );
+
+  app.get<{ Params: { catalogId: string }; Querystring: { page?: string; limit?: string } }>(
+    "/catalogs/:catalogId/imports",
+    async (request, reply) => {
+      const { catalogId } = request.params;
+      const page = Math.max(1, parseInt(request.query.page ?? "1", 10));
+      const limit = Math.min(100, Math.max(1, parseInt(request.query.limit ?? "20", 10)));
+      const skip = (page - 1) * limit;
+
+      const [imports, total] = await Promise.all([
+        app.prisma.importBatch.findMany({
+          where: { catalogId },
+          orderBy: { uploadedAt: "desc" },
+          skip,
+          take: limit,
+        }),
+        app.prisma.importBatch.count({ where: { catalogId } }),
+      ]);
+
+      return reply.send({
+        data: imports,
+        meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      });
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/imports/:id", async (request, reply) => {
+    const batch = await app.prisma.importBatch.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!batch) {
+      return reply.status(404).send({
+        error: { code: "NOT_FOUND", message: `Import batch not found: ${request.params.id}` },
+      });
+    }
+
+    return reply.send({ data: batch });
+  });
+
+  app.post<{ Params: { id: string }; Body: { fieldMappings: FieldMapping } }>(
+    "/imports/:id/confirm",
+    async (request, reply) => {
+      const { fieldMappings } = request.body;
+
+      if (!fieldMappings || typeof fieldMappings !== "object") {
+        throw new ValidationError("fieldMappings is required and must be an object");
+      }
+
+      const results = await importService.confirmImport(request.params.id, fieldMappings);
+
+      return reply.send({ data: results });
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/imports/:id/results", async (request, reply) => {
+    const batch = await app.prisma.importBatch.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!batch) {
+      return reply.status(404).send({
+        error: { code: "NOT_FOUND", message: `Import batch not found: ${request.params.id}` },
+      });
+    }
+
+    const [sourceRecordCounts, createdCount, updatedCount] = await Promise.all([
+      app.prisma.sourceRecord.groupBy({
+        by: ["parseStatus"],
+        where: { importBatchId: batch.id },
+        _count: true,
+      }),
+      app.prisma.sourceRecord.count({
+        where: {
+          importBatchId: batch.id,
+          parseStatus: { in: ["success", "warning"] },
+          canonicalProduct: { createdAt: { gte: batch.uploadedAt } },
+        },
+      }),
+      app.prisma.sourceRecord.count({
+        where: {
+          importBatchId: batch.id,
+          parseStatus: { in: ["success", "warning"] },
+          canonicalProduct: { createdAt: { lt: batch.uploadedAt } },
+        },
+      }),
+    ]);
+
+    return reply.send({
+      data: {
+        importBatchId: batch.id,
+        status: batch.status,
+        totalRows: batch.totalRows,
+        successfulRows: batch.successfulRows,
+        warningRows: batch.warningRows,
+        failedRows: batch.failedRows,
+        createdProducts: createdCount,
+        updatedProducts: updatedCount,
+        errorSummary: batch.errorSummary,
+        fieldMappings: batch.fieldMappings,
+      },
+    });
+  });
+}

@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Catalog {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String   @db.VarChar(255)
+  description    String?  @db.Text
+  createdBy      String?  @map("created_by") @db.VarChar(255)
+  updatedBy      String?  @map("updated_by") @db.VarChar(255)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  products     CanonicalProduct[]
+  importBatches ImportBatch[]
+
+  @@index([organizationId], name: "idx_catalog_org")
+  @@map("catalog")
+}
+
+model ImportBatch {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  catalogId       String   @map("catalog_id") @db.Uuid
+  filename        String   @db.VarChar(500)
+  fileType        String   @map("file_type") @db.VarChar(10)
+  sourceSystem    String?  @map("source_system") @db.VarChar(100)
+  uploadedBy      String?  @map("uploaded_by") @db.VarChar(255)
+  uploadedAt      DateTime @default(now()) @map("uploaded_at") @db.Timestamptz()
+  status          String   @default("pending") @db.VarChar(20)
+  totalRows       Int      @default(0) @map("total_rows")
+  successfulRows  Int      @default(0) @map("successful_rows")
+  warningRows     Int      @default(0) @map("warning_rows")
+  failedRows      Int      @default(0) @map("failed_rows")
+  fileStorageKey  String?  @map("file_storage_key") @db.VarChar(1000)
+  fileChecksum    String?  @map("file_checksum") @db.VarChar(128)
+  detectedHeaders Json?    @map("detected_headers")
+  parseMetadata   Json?    @map("parse_metadata")
+  fieldMappings   Json?    @map("field_mappings")
+  errorSummary    Json?    @map("error_summary")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  catalog       Catalog        @relation(fields: [catalogId], references: [id])
+  sourceRecords SourceRecord[]
+
+  @@index([catalogId], name: "idx_import_batch_catalog")
+  @@index([organizationId], name: "idx_import_batch_org")
+  @@map("import_batch")
+}
+
+/// Canonical product model — Data Kitchen's internal operational representation.
+/// lifecycle_status tracks the product lifecycle (draft → active → archived).
+/// data_quality_status tracks import data quality (complete, missing_core_fields, etc.).
+///
+/// ARCHITECTURAL DECISION: canonical_product.id (UUID) serves as the stable product
+/// identity through Steps 1–5. If AI reconciliation (Step 6+) requires cross-product
+/// identity grouping, introduce a product_identity table at that point. The current
+/// schema supports this migration without data loss — add a product_identity table,
+/// backfill one identity per product, add FK, populate.
+model CanonicalProduct {
+  id               String   @id @default(uuid()) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  catalogId        String   @map("catalog_id") @db.Uuid
+  sku              String?  @db.VarChar(255)
+  gtin             String?  @db.VarChar(14)
+  brand            String?  @db.VarChar(255)
+  productName      String?  @map("product_name") @db.VarChar(500)
+  shortDescription String?  @map("short_description") @db.Text
+  longDescription  String?  @map("long_description") @db.Text
+  category         String?  @db.VarChar(255)
+  manufacturer     String?  @db.VarChar(255)
+  lifecycleStatus     String @default("draft") @map("lifecycle_status") @db.VarChar(20)
+  dataQualityStatus   String @default("needs_review") @map("data_quality_status") @db.VarChar(30)
+  attributes       Json     @default("{}")
+  dimensions       Json     @default("{}")
+  packaging        Json     @default("{}")
+  compliance       Json     @default("{}")
+  digitalAssets    Json     @default("[]") @map("digital_assets")
+  identifiers      Json     @default("{}")
+  createdBy        String?  @map("created_by") @db.VarChar(255)
+  updatedBy        String?  @map("updated_by") @db.VarChar(255)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  catalog          Catalog                    @relation(fields: [catalogId], references: [id])
+  sourceRecords    SourceRecord[]
+  provenance       FieldProvenance[]
+  history          CanonicalProductHistory[]
+
+  // Partial unique index on (catalog_id, sku) WHERE sku IS NOT NULL is applied
+  // via custom SQL migration — Prisma does not support WHERE clauses on @@unique.
+  // The index ensures SKU uniqueness within a catalog while allowing null SKUs.
+
+  @@index([organizationId], name: "idx_product_org")
+  @@index([catalogId, dataQualityStatus], name: "idx_product_status")
+  @@map("canonical_product")
+}
+
+model SourceRecord {
+  id                 String   @id @default(uuid()) @db.Uuid
+  importBatchId      String   @map("import_batch_id") @db.Uuid
+  rowNumber          Int      @map("row_number")
+  sourceRecordKey    String?  @map("source_record_key") @db.VarChar(500)
+  rawPayloadJson     Json     @map("raw_payload_json")
+  parseStatus        String   @default("pending") @map("parse_status") @db.VarChar(20)
+  parseErrorsJson    Json?    @map("parse_errors_json")
+  canonicalProductId String?  @map("canonical_product_id") @db.Uuid
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  importBatch      ImportBatch       @relation(fields: [importBatchId], references: [id])
+  canonicalProduct CanonicalProduct? @relation(fields: [canonicalProductId], references: [id])
+  provenance       FieldProvenance[]
+  history          CanonicalProductHistory[]
+
+  @@unique([importBatchId, rowNumber], name: "uq_source_record_batch_row")
+  @@index([importBatchId], name: "idx_source_record_batch")
+  @@index([canonicalProductId], name: "idx_source_record_product")
+  @@map("source_record")
+}
+
+/// Change history for canonical products.
+/// Uses leaf-level dot-notation field paths (e.g. "packaging.net_weight", "attributes.color").
+///
+/// Serialization convention for previous_value / new_value:
+/// - Scalars: string representation (e.g. "1.82", "Vietnam", "true")
+/// - Null: stored as SQL NULL (not the string "null")
+/// - Arrays/objects: JSON.stringify only when leaf-level comparison is not practical
+///   (i.e. a top-level JSONB field changed and individual keys cannot be diffed)
+model CanonicalProductHistory {
+  id                 String   @id @default(uuid()) @db.Uuid
+  canonicalProductId String   @map("canonical_product_id") @db.Uuid
+  field              String   @db.VarChar(255)
+  previousValue      String?  @map("previous_value") @db.Text
+  newValue           String?  @map("new_value") @db.Text
+  sourceRecordId     String?  @map("source_record_id") @db.Uuid
+  actor              String?  @db.VarChar(255)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  canonicalProduct CanonicalProduct @relation(fields: [canonicalProductId], references: [id])
+  sourceRecord     SourceRecord?    @relation(fields: [sourceRecordId], references: [id])
+
+  @@index([canonicalProductId], name: "idx_product_history_product")
+  @@index([createdAt], name: "idx_product_history_time")
+  @@map("canonical_product_history")
+}
+
+model FieldProvenance {
+  id                 String   @id @default(uuid()) @db.Uuid
+  canonicalProductId String   @map("canonical_product_id") @db.Uuid
+  canonicalField     String   @map("canonical_field") @db.VarChar(255)
+  sourceRecordId     String   @map("source_record_id") @db.Uuid
+  sourceField        String   @map("source_field") @db.VarChar(255)
+  originalValue      String?  @map("original_value") @db.Text
+  normalizedValue    String?  @map("normalized_value") @db.Text
+  normalizationMethod String? @map("normalization_method") @db.VarChar(100)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  canonicalProduct CanonicalProduct @relation(fields: [canonicalProductId], references: [id])
+  sourceRecord     SourceRecord     @relation(fields: [sourceRecordId], references: [id])
+
+  @@index([canonicalProductId], name: "idx_provenance_product")
+  @@index([sourceRecordId], name: "idx_provenance_source")
+  @@map("field_provenance")
+}
