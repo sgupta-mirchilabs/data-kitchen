@@ -16,7 +16,11 @@ const apiScope = import.meta.env.VITE_ENTRA_API_SCOPE;
  */
 export const isEntraConfigured = Boolean(tenantId && clientId && apiScope);
 
-export const loginRequest = { scopes: isEntraConfigured ? [apiScope] : [] };
+// Narrow through the value rather than `isEntraConfigured` so `scopes` is
+// string[] and not (string | undefined)[] — MSAL's request types reject the latter.
+const scopes: string[] = apiScope ? [apiScope] : [];
+
+export const loginRequest = { scopes };
 
 const msalConfig: Configuration = {
   auth: {
