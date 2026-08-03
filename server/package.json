@@ -26,11 +26,12 @@
     "@fastify/multipart": "^9.0.3",
     "@prisma/client": "^6.9.0",
     "csv-parse": "^5.6.0",
-    "fastify": "^5.3.3"
+    "fastify": "^5.3.3",
+    "jose": "^6.2.7",
+    "prisma": "^6.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
-    "prisma": "^6.9.0",
     "tsx": "^4.19.0",
     "typescript": "~5.7.0",
     "vitest": "^3.2.1"

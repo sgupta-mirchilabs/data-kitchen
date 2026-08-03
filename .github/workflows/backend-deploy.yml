@@ -49,7 +49,24 @@ jobs:
       - uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+      # Migrations are NOT run here. PostgreSQL denies all traffic except the
+      # App Service outbound IPs, so CI holds no database credentials. The
+      # App Service startup command (server/startup.sh) applies migrations
+      # inside the app container before the API binds its port.
       - uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ vars.AZURE_BACKEND_APP_NAME }}
           package: server
+
+      - name: Verify health endpoint
+        run: |
+          URL="https://${{ vars.AZURE_BACKEND_APP_NAME }}.azurewebsites.net/api/v1/health"
+          echo "Waiting for $URL (migrations run during container start)"
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || true)
+            if [ "$CODE" = "200" ]; then echo "Healthy after ${i} attempt(s)."; exit 0; fi
+            echo "  attempt $i: HTTP $CODE"
+            sleep 10
+          done
+          echo "Health check failed. Container may have aborted on a failed migration."
+          exit 1

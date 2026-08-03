@@ -12,6 +12,7 @@ import { userRoutes } from "./routes/user.routes.js";
 import { PrismaClient } from "@prisma/client";
 import { createStorageProvider } from "./storage/storage.factory.js";
 import { DevAuthProvider } from "./auth/dev-auth-provider.js";
+import { EntraAuthProvider } from "./auth/entra-auth-provider.js";
 import { AutoTenantResolver } from "./auth/auto-tenant-resolver.js";
 import { registerAuthHook } from "./auth/middleware.js";
 import { writeAuditLog } from "./services/audit.service.js";
@@ -52,8 +53,15 @@ let tenantResolver: TenantResolver;
 
 if (config.auth.mode === "development") {
   authProvider = new DevAuthProvider(config.auth.devAuthToken!);
+} else if (config.auth.mode === "entra") {
+  authProvider = new EntraAuthProvider({
+    tenantId: config.auth.entraTenantId!,
+    apiClientId: config.auth.entraApiClientId!,
+  });
 } else {
-  throw new Error("Production auth provider not yet implemented. Set AUTH_MODE=development.");
+  throw new Error(
+    `Unsupported AUTH_MODE=${config.auth.mode}. Use "development" locally or "entra" in the cloud.`,
+  );
 }
 
 tenantResolver = new AutoTenantResolver();

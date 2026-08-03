@@ -1,13 +1,26 @@
+import { acquireAccessToken, isEntraConfigured } from "../auth/authConfig";
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api/v1";
 
 const ORG_STORAGE_KEY = "dk-selected-org-id";
 
-function authHeaders(): Record<string, string> {
+/**
+ * Builds request headers.
+ *
+ * In cloud builds Entra is configured and the bearer token comes from MSAL. In
+ * local development Entra is absent and VITE_DEV_AUTH_TOKEN is used instead —
+ * that variable is never set in a cloud build, so no shared token is ever
+ * embedded in a published bundle.
+ */
+async function authHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
 
-  const token = import.meta.env.VITE_DEV_AUTH_TOKEN;
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  if (isEntraConfigured) {
+    const token = await acquireAccessToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  } else {
+    const devToken = import.meta.env.VITE_DEV_AUTH_TOKEN;
+    if (devToken) headers["Authorization"] = `Bearer ${devToken}`;
   }
 
   const orgId = sessionStorage.getItem(ORG_STORAGE_KEY);
@@ -79,7 +92,7 @@ export function clearSelectedOrganization(): void {
 export const api = {
   async get<T>(path: string): Promise<ApiResponse<T>> {
     const response = await fetch(`${BASE_URL}${path}`, {
-      headers: { ...authHeaders() },
+      headers: { ...(await authHeaders()) },
     });
     return handleResponse<T>(response);
   },
@@ -87,7 +100,7 @@ export const api = {
   async post<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
     const response = await fetch(`${BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
       body: body ? JSON.stringify(body) : undefined,
     });
     return handleResponse<T>(response);
@@ -96,7 +109,7 @@ export const api = {
   async patch<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
     const response = await fetch(`${BASE_URL}${path}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
       body: body ? JSON.stringify(body) : undefined,
     });
     return handleResponse<T>(response);
@@ -112,7 +125,7 @@ export const api = {
     }
     const response = await fetch(`${BASE_URL}${path}`, {
       method: "POST",
-      headers: { ...authHeaders() },
+      headers: { ...(await authHeaders()) },
       body: formData,
     });
     return handleResponse<T>(response);

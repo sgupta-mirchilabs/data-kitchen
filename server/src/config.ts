@@ -19,12 +19,15 @@ function optionalInt(key: string, fallback: number): number {
 export function loadConfig() {
   const nodeEnv = optional("NODE_ENV", "development");
   const isProduction = nodeEnv === "production";
-  const authMode = optional("AUTH_MODE", "development") as "development" | "production";
+  const authMode = optional("AUTH_MODE", "development") as
+    | "development"
+    | "production"
+    | "entra";
 
   if (authMode === "development" && isProduction) {
     throw new Error(
       "AUTH_MODE=development cannot be used when NODE_ENV=production. " +
-      "Set AUTH_MODE=production for production deployments.",
+      "Set AUTH_MODE=entra for cloud deployments.",
     );
   }
 
@@ -32,6 +35,21 @@ export function loadConfig() {
     if (!process.env.AUTH_ISSUER) throw new Error("Production auth requires AUTH_ISSUER");
     if (!process.env.AUTH_AUDIENCE) throw new Error("Production auth requires AUTH_AUDIENCE");
     if (!process.env.AUTH_JWKS_URI) throw new Error("Production auth requires AUTH_JWKS_URI");
+  }
+
+  if (authMode === "entra") {
+    if (!process.env.ENTRA_TENANT_ID) {
+      throw new Error("AUTH_MODE=entra requires ENTRA_TENANT_ID");
+    }
+    if (!process.env.ENTRA_API_CLIENT_ID) {
+      throw new Error("AUTH_MODE=entra requires ENTRA_API_CLIENT_ID");
+    }
+    if (process.env.DEV_AUTH_TOKEN) {
+      throw new Error(
+        "DEV_AUTH_TOKEN must not be set when AUTH_MODE=entra. " +
+        "The development token is for local development and integration tests only.",
+      );
+    }
   }
 
   let devAuthToken: string | undefined;
@@ -71,6 +89,8 @@ export function loadConfig() {
       issuer: process.env.AUTH_ISSUER,
       audience: process.env.AUTH_AUDIENCE,
       jwksUri: process.env.AUTH_JWKS_URI,
+      entraTenantId: process.env.ENTRA_TENANT_ID,
+      entraApiClientId: process.env.ENTRA_API_CLIENT_ID,
     },
 
     storage: {
