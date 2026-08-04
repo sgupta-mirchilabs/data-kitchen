@@ -8,7 +8,9 @@
 
 ## Summary
 
-Backend is **provisioned, deployed, and serving**. Authentication rejects unauthorized callers correctly. Frontend is **not deployed**. End-to-end import validation is **not complete** — it requires an interactive Entra sign-in that must be performed by a person.
+Backend and frontend are both **deployed and serving**. Authentication rejects unauthorized callers correctly, and the sign-in flow reaches Microsoft Entra as designed. **Sign-in itself currently fails with AADSTS50020** — an identity/tenant-membership problem, not an application-code problem. All end-to-end validation is blocked behind it.
+
+**The environment is frozen pending a decision. No remediation has been approved or applied.**
 
 | Area | Status |
 |---|---|
@@ -17,9 +19,94 @@ Backend is **provisioned, deployed, and serving**. Authentication rejects unauth
 | Database migrations | ✅ Applied |
 | Backend deployment | ✅ Live, health 200 |
 | Auth rejection paths | ✅ Verified live (5 checks) |
-| Auth acceptance paths | ⛔ Blocked — needs interactive sign-in |
-| Frontend deployment | ⛔ Not deployed |
-| End-to-end import | ⛔ Not run |
+| Frontend deployment | ✅ Live, MSAL build verified |
+| Sign-in reaches Entra | ✅ Redirect and authority correct |
+| **Interactive sign-in** | ⛔ **Blocked — AADSTS50020** |
+| Auth acceptance paths | ⛔ Blocked behind sign-in |
+| End-to-end import | ⛔ Blocked behind sign-in |
+
+---
+
+## ACTIVE BLOCKER — AADSTS50020
+
+### Error
+
+```
+AADSTS50020: User account from identity provider 'live.com' does not exist
+in tenant 'Mirchi Labs' and cannot access the application.
+```
+
+Raised by Microsoft Entra during interactive sign-in, before any token reaches the Data Kitchen API. The application never sees a token, so no backend behaviour is implicated.
+
+### Affected account
+
+`sgupta@mirchilabs.com` — the intended primary operator, and the identity the cloud database was bootstrapped against.
+
+### Root cause — CONFIRMED (supersedes the earlier identity hypothesis)
+
+**`VITE_ENTRA_CLIENT_ID` was set to the API registration's client ID instead of the SPA's.**
+
+Bundle inspection of the deployed build (`index-DznJaUbe.js`) showed the MSAL configuration compiled as:
+
+```js
+ID = `<tenant-id>`                          // tenantId  — correct
+LD = `<api-registration-client-id>`         // clientId  — WRONG: this is data-kitchen-api-dev
+RD = `api://<api-registration-client-id>/access_as_user`   // scope — correct
+```
+
+The `data-kitchen-web-dev` client ID appeared **nowhere** in the bundle. Both `VITE_ENTRA_CLIENT_ID` and the GUID inside `VITE_ENTRA_API_SCOPE` carried the same API GUID.
+
+`data-kitchen-api-dev` is a resource server with **no redirect URIs of any kind** (`spa: []`, `web: []`, `publicClient: []`). It cannot serve an interactive browser sign-in. `data-kitchen-web-dev` — which holds all three correct SPA redirect URIs — was never used.
+
+**Verified NOT at fault:**
+
+- `authority` — tenant-scoped `https://login.microsoftonline.com/<tenant-id>`, not `/common` or `/organizations`
+- tenant ID — matches the Mirchi Labs directory exactly
+- API scope — correct
+- redirect URIs, CORS, and the API audience — all verified working immediately prior
+
+The earlier hypothesis (personal-MSA / guest / home-realm collision) is **not supported**. Authority and tenant were correct all along; the client ID was wrong.
+
+Two artefacts that initially looked suspicious and are **not** relevant: the GUID `53ee284d-…` in the bundle is an MSAL library constant (browser-extension `CHANNEL_ID`), and the `login.microsoftonline.com/common` string is an MSAL internal default (`msal.js.common`), not the `?? "common"` fallback — that fallback never fires.
+
+### Resolution applied
+
+The `VITE_ENTRA_CLIENT_ID` repository variable was corrected to the `data-kitchen-web-dev` Application (client) ID and the frontend rebuilt. No code or Azure configuration was changed.
+
+### Downstream consequence to watch
+
+If the sign-in is ultimately resolved to an identity whose `oid` differs from the seeded one, sign-in will start succeeding but the tenant resolver will return **403 `FORBIDDEN` ("User account not found or inactive")**, because `User.externalIdentityId` will not match. The seeded record would then need its `externalIdentityId` corrected to the real `oid`. Do not interpret that 403 as a new fault.
+
+### Remediation status
+
+**None approved. None applied.** The following are explicitly **not** authorized and have not been done:
+
+- changing either app registration from single-tenant to multi-tenant
+- adding or inviting guest users
+- modifying `signInAudience` / supported account types
+- changing tenant IDs
+- altering authentication code
+- any other Azure, Entra, GitHub, or deployment change
+
+The deployment and all configuration are preserved exactly as verified.
+
+### Identity checks — DEFERRED, not cancelled
+
+The three checks below were queued while the identity hypothesis was live. They are **not needed unless sign-in still fails after the client-ID correction**. If AADSTS50020 persists with the corrected client ID, the identity questions become relevant again and these are the checks to run.
+
+One piece of evidence to revisit if that happens: during provisioning, `az ad signed-in-user show` returned an **organizational** identity for `sgupta@mirchilabs.com` with a directory object ID that Graph resolved — and that object ID is what `bootstrap-cloud.ts` seeded as `externalIdentityId`. If the browser session ever resolves a different identity, the two would disagree.
+
+1. **Does `sgupta@mirchilabs.com` exist in the Mirchi Labs tenant, and as what?**
+   Determine whether it is present as a **Member** or a **Guest**, or absent entirely.
+   Entra admin center → Users → search the address → inspect **User type** and **Identities / Source**.
+
+2. **Is it a personal Microsoft account or an organizational Entra account?**
+   On the same user record, check whether the issuer/source reads as an external `live.com` / Microsoft account versus an in-tenant organizational identity (`Microsoft Entra ID`). This is the check that directly explains the `'live.com'` string in the error.
+
+3. **Are the tenant ID and app-registration tenant still correct?**
+   Confirm the tenant ID used by the frontend (`VITE_ENTRA_TENANT_ID`) and the backend (`ENTRA_TENANT_ID`) match the Mirchi Labs directory, and that both `data-kitchen-web-dev` and `data-kitchen-api-dev` still reside in that same tenant with `signInAudience: AzureADMyOrg`. These were correct when last verified; this step is to rule out drift, not to change anything.
+
+Report the findings before any remediation is chosen — the appropriate fix differs substantially between "not a member at all", "member but MSA-backed", and "guest".
 
 ---
 
@@ -112,6 +199,10 @@ The last two used genuine, validly-signed Entra tokens from the Mirchi Labs tena
 
 **Not yet verified:** wrong-tenant / expired / valid-user / inactive-user / inactive-membership / organization-selection against the live endpoint; frontend sign-in and logout; import pipeline; provenance, history, audit logs; live cross-tenant rejection; Application Insights telemetry.
 
+All of the above remain blocked by **AADSTS50020** — each needs a real API-scoped access token, which cannot be issued until the identity question is resolved.
+
+**Frontend deployment verified live** (commit `0c56d84`): served bundle contains the absolute App Service base URL, `login.microsoftonline.com`, `acquireTokenSilent`, `access_as_user`, and the sign-in UI, with **zero** occurrences of `DEV_AUTH_TOKEN`.
+
 ---
 
 ## Seed data
@@ -129,11 +220,10 @@ Separate from `prisma/seed.ts`, which is intentionally guarded against non-local
 
 ## Blocked — needs a person
 
-1. **Interactive Entra sign-in.** A real API-scoped access token requires a browser sign-in with a Mirchi Labs account. Needed for the remaining acceptance checks and the entire import flow.
-2. **GitHub secrets and variables.** `gh` CLI is not installed. Required before CI can deploy:
-   - Secrets: `AZURE_CREDENTIALS`, `AZURE_STATIC_WEB_APPS_API_TOKEN_ICY_STONE_00F10FB1E`
-   - Variables: `AZURE_BACKEND_APP_NAME`, `VITE_API_BASE_URL`, `VITE_ENTRA_TENANT_ID`, `VITE_ENTRA_CLIENT_ID` (SPA), `VITE_ENTRA_API_SCOPE` (API)
-3. **Frontend deployment.** Either wire up the SWA token above, or approve a direct `az` deployment.
+1. **AADSTS50020 identity resolution.** The single open blocker. Interactive sign-in fails before a token is issued, so every acceptance check and the entire import flow are unreachable. See **ACTIVE BLOCKER — AADSTS50020** above for the three diagnostic checks. No remediation approved.
+2. **`AZURE_CREDENTIALS` secret** (optional). The backend CI/CD workflow fails at `azure/login`; the deploy step is skipped, so the running backend is unaffected. The backend was deployed directly via `az`. Only needed if backend deployment should run through CI.
+
+**Resolved since the previous checkpoint:** the five GitHub repository variables and the SWA deployment token are configured, and the frontend is deployed and verified.
 
 ---
 
