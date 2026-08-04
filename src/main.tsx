@@ -6,6 +6,7 @@ import "./index.css";
 import App from "./App";
 import { msalInstance, initializeMsal } from "./auth/authConfig";
 import { SignInGate } from "./components/SignInGate";
+import { OrganizationGate } from "./components/OrganizationGate";
 
 const tree = (
   <StrictMode>
@@ -13,7 +14,10 @@ const tree = (
       {msalInstance ? (
         <MsalProvider instance={msalInstance}>
           <SignInGate>
-            <App />
+            {/* Inside SignInGate: organization lookup needs a bearer token. */}
+            <OrganizationGate>
+              <App />
+            </OrganizationGate>
           </SignInGate>
         </MsalProvider>
       ) : (
