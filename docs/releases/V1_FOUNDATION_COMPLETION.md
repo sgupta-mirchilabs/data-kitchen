@@ -1,6 +1,6 @@
 # V1 Foundation — Phase 1 Completion Report
 
-> **Date:** 2026-08-07
+> **Date:** 2026-08-07 (updated after KI-1 resolution)
 > **Environment:** Internal Mirchi Labs development (`datakitchen-dev-rg`, West US 3). NOT customer production.
 > **Frontend:** https://datakitchen.mirchilabs.com · **API:** `datakitchen-api-dev.azurewebsites.net`
 > **Scope:** Phase 1 foundation only. Phase 2 (Retail Intelligence Library) not started.
@@ -10,13 +10,13 @@
 
 ## 1. Executive summary
 
-The Phase 1 foundation is **functionally complete and verified end to end in the cloud**, with one verification gap and four recorded defects.
+The Phase 1 foundation is **functionally complete and verified end to end in the cloud**. The one outstanding verification gap — catalog isolation — was closed on 2026-08-07 after resolving KI-1; three known issues remain open, none blocking.
 
-Seven imports were executed through the deployed UI by an Entra-authenticated operator across two organizations. All parsed cleanly: **24/24 rows, 0 failures**. Every downstream artefact — blob preservation, canonical products, source records, field provenance, product history, import history, audit log — was verified directly against the production database.
+Eight imports were executed through the deployed UI by an Entra-authenticated operator across two organizations and three catalogs. All parsed cleanly: **28/28 rows, 0 failures**. Every downstream artefact — blob preservation, canonical products, source records, field provenance, product history, import history, audit log — was verified directly against the production database.
 
-**Referential tenant integrity is clean:** 0 mismatches across 11 products, 7 batches, 24 source records and 172 provenance rows.
+**Referential tenant integrity is clean:** 0 mismatches across 15 products and 8 batches.
 
-The one gap — end-to-end catalog isolation — is **blocked by a UI defect, not by a data-model problem**. The underlying isolation logic was proven directly against live data.
+Catalog isolation is now **verified end to end**: an import into a second catalog created new products, left the first catalog byte-identical, and attached every provenance, source and audit row to the correct catalog.
 
 ### Final data state
 
@@ -25,11 +25,11 @@ The one gap — end-to-end catalog isolation — is **blocked by a UI defect, no
 | Organizations | 2 |
 | Users | 4 (1 operator + 3 fixtures) |
 | Memberships | 4 |
-| Catalogs | 4 (2 populated, 2 empty) |
-| Import batches | 7 |
-| Canonical products | 11 |
-| Source records | 24 |
-| Field provenance | 172 |
+| Catalogs | 4 (3 populated, 1 empty) |
+| Import batches | 8 |
+| Canonical products | 15 |
+| Source records | 28 |
+| Field provenance | 200 |
 | Product history | 33 |
 
 ---
@@ -51,36 +51,42 @@ The one gap — end-to-end catalog isolation — is **blocked by a UI defect, no
 | **Inactive membership** | **403 FORBIDDEN** — "No active organization membership" |
 | **Cross-org selection refused** | **403 INVALID_ORGANIZATION** — user cannot select a non-member org |
 | Unknown Entra identity | 403 FORBIDDEN |
-| CSV import | 5 batches |
+| CSV import | 7 batches |
 | JSON import | 1 batch |
-| Blob preservation | 7 files in Azure, sizes + SHA checksums recorded |
+| Blob preservation | 8 files in Azure, sizes + SHA checksums recorded |
 | Blob tenant isolation | Org-prefixed paths: `organizations/<orgId>/catalogs/<catalogId>/imports/…` |
-| Canonical products | 11, values correct after updates |
-| Source records | 24, all `success`, **raw payloads byte-preserved** |
-| Field provenance | 172 rows with original value, normalized value, and method |
+| Canonical products | 15, values correct after updates |
+| Source records | 28, all `success`, **raw payloads byte-preserved** |
+| Field provenance | 200 rows with original value, normalized value, and method |
 | Product history | 33 rows; **only changed fields recorded** |
-| Import history | 7 batches with row counts, status, storage key, checksum |
+| Import history | 8 batches with row counts, status, storage key, checksum |
 | Audit log | `import.uploaded` / `confirmed` / `completed` per import, with org + user attribution |
 | Cross-organization SKU isolation | MRC-1001/1002/1003 exist independently in both orgs with different brands |
-| Referential tenant integrity | 0 mismatches across 214 linked rows |
+| Referential tenant integrity | 0 mismatches across 251 linked rows |
 
 Authorization results were produced with **dedicated fixtures**; the live operator account was never deactivated. Each negative case is paired with a positive control — the same fixture resolves successfully for its own organization — so the refusals are membership-driven, not incidental failures.
 
-### ⚠️ Partial
+### ✅ Complete — catalog isolation *(closed 2026-08-07, after KI-1 was resolved)*
 
-**Catalog isolation — logic proven, end-to-end not performed.**
+Verified end to end by importing `1-mirchi-q3-v1.csv` into **Mirchi Labs / Q3 Product Feed** through the deployed UI, against a baseline snapshot of Import Sandbox captured immediately beforehand.
 
-Proven directly against the live database via `findDuplicate()`:
+| Check | Result |
+|---|---|
+| Import landed in the intended catalog | ✅ `Q3 Product Feed [production]`, 4/4 rows, 0 failed |
+| **Created, not updated** | ✅ `createdProducts: 4, updatedProducts: 0` |
+| Blob path scoped to the target catalog | ✅ key contains the Q3 catalog id |
+| Same SKU independent across catalogs, same org | ✅ MRC-1001/1002/1003/1004 each hold 2 distinct Mirchi rows in 2 catalogs |
+| Same SKU across all tenants | ✅ MRC-1001 exists as 3 distinct products across 3 catalogs |
+| **Import Sandbox unmodified** | ✅ 8 products **byte-identical, including `updatedAt`** |
+| Provenance attached to the correct catalog | ✅ 28 rows, **0** sourced outside Q3 |
+| Source records attached to the correct catalog | ✅ 4 rows, **0** pointing outside Q3 |
+| Import history is catalog-specific | ✅ Q3 = 1 batch, Sandbox = 6 batches |
+| Audit trail | ✅ `import.uploaded` records the Q3 catalog id; `import.completed` records 4 created / 0 updated |
+| No cross-organization leakage | ✅ 0 mismatches across 15 products and 8 batches |
 
-| Probe scope | By SKU | By GTIN |
-|---|---|---|
-| Same catalog (Mirchi / Import Sandbox) | MATCH | MATCH |
-| **Different catalog, same org (Mirchi / Q3 Product Feed)** | **null** | **null** |
-| Different org (Northwind / Import Sandbox) | MATCH *(Northwind's own row)* | MATCH *(own row)* |
+Supporting code-level evidence from `findDuplicate()` probes against live data — match within the same catalog, **null** for a different catalog in the same organization — is consistent with the observed create-not-update behaviour.
 
-**Deduplication never crosses catalog boundaries — confirmed.** A Q3 import of `MRC-1001` would create, never update.
-
-Not yet observed end to end: provenance / source records / history / audit attaching to a second catalog within one organization, and non-modification of the first catalog during that import. **This cannot currently be produced through the UI** — see Known Issue KI-1.
+That Q3 shows **0 history rows** is itself confirmation: every row was a fresh insert, so nothing was overwritten.
 
 ### ⏸ Deferred
 
@@ -96,24 +102,45 @@ Not yet observed end to end: provenance / source records / history / audit attac
 
 ## 3. Known issues
 
-### KI-1 — No catalog selection in the UI *(blocker for catalog-isolation verification)*
+### KI-1 — No catalog selection in the UI — ✅ **RESOLVED** *(commit `a1ca4c5`, 2026-08-07)*
 
-**Severity:** High — silently routes data to the wrong catalog.
+**Original severity:** High — silently routed data to the wrong catalog.
 
-The catalog is pinned to the first element of the catalog list and never changes:
+**Defect as found.** The catalog was pinned to the first element of the catalog list and never reassigned:
 
 ```ts
-// src/pages/IntakePage.tsx:73
+// src/pages/IntakePage.tsx:73 (before)
 const catalogs = await repository.getCatalogs();
 if (catalogs.length > 0) {
-  setCatalogId(catalogs[0].id);   // setCatalogId is never called again
+  setCatalogId(catalogs[0].id);   // setCatalogId was never called again
 ```
 
-`getCatalogs()` is called in exactly one place, to take `[0]`. The server returns catalogs `orderBy: { createdAt: "desc" }`, so the **most recently created** catalog always wins — here, `Import Sandbox`.
+`getCatalogs()` was called in exactly one place, to take `[0]`. The server returns catalogs `orderBy: { createdAt: "desc" }`, so the most recently created catalog always won — `Import Sandbox`. All 7 imports up to that point landed there regardless of intent, including two aimed at `Q3 Product Feed`. Selecting a catalog was impossible in that build; this was never operator error.
 
-**Consequence:** all 7 imports landed in Import Sandbox regardless of operator intent, including two explicitly aimed at `Q3 Product Feed`. Both `Q3 Product Feed` catalogs remain empty (0 products, 0 batches). This is not operator error — selecting a catalog is impossible in the current build.
+**Resolution.** An always-visible catalog selector now sits in the workspace header beside the active organization, with a `catalog_type` badge (production highlighted). The selection rules live in `src/lib/catalog-selection.ts`, free of React so they are directly testable:
 
-**Recommended fix:** add a catalog selector to the workspace header, persist the choice like the organization selection, and surface the target catalog in the import wizard's confirmation step. Until then, catalog isolation cannot be verified end to end through the UI.
+| Situation | Behaviour |
+|---|---|
+| No catalogs | Imports blocked, explanatory empty state |
+| Exactly one catalog | Auto-selected — unambiguous, not a guess |
+| Several + valid stored choice | Restored |
+| Several + no valid stored choice | **Explicit selection required** |
+
+- Selection persists per organization under `data-kitchen:selected-catalog:<organizationId>`.
+- A stored id is honoured **only** if it is still one of that organization's catalogs; stale or cross-organization ids are discarded. The stored value is never treated as authorization — the server continues to enforce catalog ownership from tenant context on every request.
+- Switching catalogs clears products, stats, import history and product selection **before** refetching, so the previous catalog's rows are never shown against the new one.
+- The import wizard displays its destination catalog; imports are blocked when none is selected.
+
+**Remaining `catalogs[0]` occurrences:** exactly one, and it is justified —
+
+```ts
+// src/lib/catalog-selection.ts:42
+if (catalogs.length === 1) return { status: "auto-selected", catalogId: catalogs[0].id };
+```
+
+guarded by `length === 1`, where there is nothing to choose. No hardcoded catalog ids remain in shipped code, and every `catalogId` consumer receives it explicitly as a parameter or prop.
+
+**Tests:** 21 frontend cases (auto-select, needs-selection, restore, stale-id discard, per-organization isolation, organization-switch context change, cross-organization id refusal, type labelling — including an explicit assertion that several catalogs never resolve to the first) and 7 backend cases proving `findDuplicate` constrains every lookup by `catalogId`.
 
 ### KI-2 — Invalid GTIN values accepted silently
 
@@ -218,8 +245,8 @@ Unchanged from the approved infrastructure plan. **This environment is internal 
 
 In priority order, before any Phase 2 work:
 
-1. **Fix KI-1 (catalog selector)** — highest value. Unblocks catalog-isolation verification and prevents silent misrouting of imports.
-2. **Re-run catalog isolation** once KI-1 ships: import `1-mirchi-q3-v1.csv` into `Mirchi Labs / Q3 Product Feed` and confirm create-not-update plus non-modification of Import Sandbox.
+1. ~~Fix KI-1 (catalog selector)~~ — **done**, commit `a1ca4c5`.
+2. ~~Re-run catalog isolation~~ — **done**, passed all checks.
 3. **Address KI-2 (GTIN validation)** — cheapest meaningful data-quality win.
 4. **Address KI-3 (duplicate-row warning)** — preview-stage warning only; resolution behaviour unchanged.
 5. **Decide on prototype UI cleanup** (section 5).
