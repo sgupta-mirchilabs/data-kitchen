@@ -109,6 +109,34 @@ async function main() {
     });
   }
 
+  // Active user holding exactly one ACTIVE membership (primary org only).
+  // Used to prove that selecting a organization the user does not belong to is
+  // refused, which the dual-membership operator account cannot demonstrate.
+  const singleOrgUser = await prisma.user.upsert({
+    where: { externalIdentityId: "fixture-single-org" },
+    update: { status: "active" },
+    create: {
+      externalIdentityId: "fixture-single-org",
+      email: "singleorg.fixture@invalid.local",
+      displayName: "Single Org Fixture",
+      status: "active",
+    },
+  });
+
+  const existingSingle = await prisma.organizationMembership.findFirst({
+    where: { organizationId: ORG_PRIMARY, userId: singleOrgUser.id },
+  });
+  if (existingSingle) {
+    await prisma.organizationMembership.update({
+      where: { id: existingSingle.id },
+      data: { status: "active", role: "member" },
+    });
+  } else {
+    await prisma.organizationMembership.create({
+      data: { organizationId: ORG_PRIMARY, userId: singleOrgUser.id, role: "member", status: "active" },
+    });
+  }
+
   // Catalogs covering both classifications, in both tenants, with an
   // intentionally overlapping name to prove isolation is by organization.
   const catalogs = [
