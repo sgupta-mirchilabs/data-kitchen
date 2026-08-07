@@ -70,7 +70,7 @@ export function OrganizationGate({ children }: { children: ReactNode }) {
         if (stored && !storedIsValid) clearSelectedOrganization();
 
         if (organizations.length === 1) {
-          setSelectedOrganization(organizations[0].id);
+          setSelectedOrganization(organizations[0].id, organizations[0].name);
           setState({ phase: "ready", organization: organizations[0] });
           return;
         }
@@ -93,7 +93,7 @@ export function OrganizationGate({ children }: { children: ReactNode }) {
   }, []);
 
   function choose(org: Organization) {
-    setSelectedOrganization(org.id);
+    setSelectedOrganization(org.id, org.name);
     setState({ phase: "ready", organization: org });
   }
 

@@ -16,6 +16,14 @@ import {
   type CatalogStats,
   type ImportBatch,
 } from "../lib/catalog-repository";
+import { CatalogSelector } from "../components/catalog/CatalogSelector";
+import {
+  resolveActiveCatalog,
+  readStoredCatalogId,
+  writeStoredCatalogId,
+  type CatalogSummary,
+} from "../lib/catalog-selection";
+import { getSelectedOrganization, getSelectedOrganizationName } from "../lib/api-client";
 
 function QualityBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; color: string; bg: string; icon: typeof CheckCircle2 }> = {
@@ -37,11 +45,48 @@ function QualityBadge({ status }: { status: string }) {
   );
 }
 
+function NoticePanel({ title, body }: { title: string; body: string }) {
+  return (
+    <div
+      style={{
+        border: "2px dashed var(--border)",
+        borderRadius: 10,
+        padding: "56px 24px",
+        textAlign: "center",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 12,
+      }}
+    >
+      <div
+        style={{
+          width: 52, height: 52, borderRadius: 14, background: "var(--surface-raised)",
+          border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >
+        <Database size={22} color="var(--text-muted)" />
+      </div>
+      <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>{title}</div>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", maxWidth: 440 }}>{body}</div>
+    </div>
+  );
+}
+
 type View = "catalog" | "importing" | "history";
+
+/** Whether a catalog is known yet, and if not, why. */
+type CatalogPhase = "loading" | "ready" | "needs-selection" | "no-catalogs";
 
 export function IntakePage() {
   const [repo, setRepo] = useState<CatalogRepository | null>(null);
   const [catalogId, setCatalogId] = useState<string | null>(null);
+  const [catalogs, setCatalogs] = useState<CatalogSummary[]>([]);
+  const [catalogPhase, setCatalogPhase] = useState<CatalogPhase>("loading");
+  // Captured once per mount. OrganizationGate reloads the app on switch, so a
+  // change of organization always arrives as a fresh mount with fresh storage.
+  const [organizationId] = useState<string | null>(() => getSelectedOrganization());
+  const [organizationName] = useState<string | null>(() => getSelectedOrganizationName());
   const [products, setProducts] = useState<CatalogProduct[]>([]);
   const [stats, setStats] = useState<CatalogStats | null>(null);
   const [imports, setImports] = useState<ImportBatch[]>([]);
@@ -70,19 +115,52 @@ export function IntakePage() {
       try {
         const repository = await getCatalogRepository();
         setRepo(repository);
-        const catalogs = await repository.getCatalogs();
-        if (catalogs.length > 0) {
-          setCatalogId(catalogs[0].id);
-          await loadData(repository, catalogs[0].id);
+
+        // Catalogs are returned for the active organization only; the server
+        // scopes by tenant context, so this list can never contain another
+        // organization's catalogs.
+        const list = await repository.getCatalogs();
+        setCatalogs(list);
+
+        const resolution = resolveActiveCatalog(list, readStoredCatalogId(organizationId));
+
+        if (resolution.catalogId) {
+          setCatalogId(resolution.catalogId);
+          writeStoredCatalogId(organizationId, resolution.catalogId);
+          setCatalogPhase("ready");
+          await loadData(repository, resolution.catalogId);
         } else {
+          // Either there are no catalogs, or there are several and none was
+          // validly stored. Both cases require the operator to act; we do not
+          // fall back to the first catalog.
+          setCatalogId(null);
+          setCatalogPhase(resolution.status === "no-catalogs" ? "no-catalogs" : "needs-selection");
           setLoading(false);
         }
       } catch {
+        setCatalogPhase("no-catalogs");
         setLoading(false);
       }
     }
     init();
-  }, [loadData]);
+    // organizationId is fixed for the lifetime of this mount.
+  }, [loadData, organizationId]);
+
+  function handleSelectCatalog(nextId: string) {
+    if (nextId === catalogId) return;
+    // Drop the previous catalog's data immediately so it is never displayed
+    // against the newly selected catalog while the refresh is in flight.
+    setProducts([]);
+    setStats(null);
+    setImports([]);
+    setTotal(0);
+    setSelectedId(null);
+    setView("catalog");
+    setLoading(true);
+    setCatalogId(nextId);
+    setCatalogPhase("ready");
+    writeStoredCatalogId(organizationId, nextId);
+  }
 
   useEffect(() => {
     if (repo && catalogId) {
@@ -95,6 +173,7 @@ export function IntakePage() {
   }
 
   const selected = products.find((p) => p.id === selectedId) ?? null;
+  const activeCatalog = catalogs.find((c) => c.id === catalogId) ?? null;
   const isEmpty = !loading && products.length === 0 && filterStatus === "all" && !search;
 
   const STATUSES: Array<{ key: string; label: string }> = [
@@ -133,6 +212,15 @@ export function IntakePage() {
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
               Import and manage product data. Data Kitchen preserves original source records and tracks field provenance.
             </p>
+            <div style={{ marginTop: 12 }}>
+              <CatalogSelector
+                organizationName={organizationName}
+                catalogs={catalogs}
+                activeCatalogId={catalogId}
+                onSelect={handleSelectCatalog}
+                disabled={view === "importing"}
+              />
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             {view === "catalog" && (
@@ -182,6 +270,8 @@ export function IntakePage() {
             <motion.div key="importing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <ImportWizard
                 catalogId={catalogId}
+                catalogName={activeCatalog?.name}
+                catalogType={activeCatalog?.catalogType}
                 onClose={() => setView("catalog")}
                 onImportComplete={handleImportComplete}
               />
@@ -203,7 +293,17 @@ export function IntakePage() {
           {/* Catalog View */}
           {view === "catalog" && (
             <motion.div key="catalog" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-              {loading ? (
+              {catalogPhase === "no-catalogs" ? (
+                <NoticePanel
+                  title="No catalogs available"
+                  body={`This organization${organizationName ? ` (${organizationName})` : ""} has no catalogs, so there is nowhere to import into. Create a catalog before importing products.`}
+                />
+              ) : catalogPhase === "needs-selection" ? (
+                <NoticePanel
+                  title="Select a catalog to continue"
+                  body="This organization has more than one catalog. Choose the target catalog above — Data Kitchen will not pick one for you, because importing into the wrong catalog is not recoverable through the UI."
+                />
+              ) : loading ? (
                 <div style={{ padding: 48, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
                   Loading catalog...
                 </div>

@@ -7,6 +7,7 @@ import { FieldMapper } from "./FieldMapper";
 import { ImportProgress } from "./ImportProgress";
 import { ImportResults } from "./ImportResults";
 import { api } from "../../lib/api-client";
+import { CatalogTypeBadge } from "./CatalogSelector";
 
 type Stage = "upload" | "preview" | "mapping" | "importing" | "results";
 
@@ -40,11 +41,14 @@ interface ImportResultData {
 
 interface Props {
   catalogId: string;
+  /** Shown so the operator can confirm the destination before uploading. */
+  catalogName?: string;
+  catalogType?: string;
   onClose: () => void;
   onImportComplete: () => void;
 }
 
-export function ImportWizard({ catalogId, onClose, onImportComplete }: Props) {
+export function ImportWizard({ catalogId, catalogName, catalogType, onClose, onImportComplete }: Props) {
   const [stage, setStage] = useState<Stage>("upload");
   const [error, setError] = useState<string | null>(null);
   const [uploadData, setUploadData] = useState<UploadResponse | null>(null);
@@ -107,6 +111,19 @@ export function ImportWizard({ catalogId, onClose, onImportComplete }: Props) {
         background: "var(--surface)", overflow: "hidden",
       }}
     >
+      {/* Destination banner — the operator must see where this import lands. */}
+      {catalogName && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "8px 16px", borderBottom: "1px solid var(--border)",
+          background: "var(--surface-overlay)", fontSize: 12,
+        }}>
+          <span style={{ color: "var(--text-muted)" }}>Importing into</span>
+          <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{catalogName}</span>
+          <CatalogTypeBadge catalogType={catalogType} />
+        </div>
+      )}
+
       {/* Header */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",

@@ -75,7 +75,7 @@ export interface HistoryRecord {
 
 export interface CatalogRepository {
   mode: "demo" | "live";
-  getCatalogs(): Promise<Array<{ id: string; name: string }>>;
+  getCatalogs(): Promise<Array<{ id: string; name: string; catalogType?: string }>>;
   getCatalogStats(catalogId: string): Promise<CatalogStats>;
   getProducts(catalogId: string, options?: { page?: number; status?: string; search?: string }): Promise<{ products: CatalogProduct[]; total: number }>;
   getProduct(productId: string): Promise<CatalogProduct | null>;
@@ -89,7 +89,7 @@ class DemoCatalogRepository implements CatalogRepository {
   mode = "demo" as const;
 
   async getCatalogs() {
-    return [{ id: "demo", name: "Demo Catalog" }];
+    return [{ id: "demo", name: "Demo Catalog", catalogType: "test" }];
   }
 
   async getCatalogStats(): Promise<CatalogStats> {
@@ -152,7 +152,7 @@ class ApiCatalogRepository implements CatalogRepository {
   mode = "live" as const;
 
   async getCatalogs() {
-    const res = await api.get<Array<{ id: string; name: string }>>("/catalogs");
+    const res = await api.get<Array<{ id: string; name: string; catalogType?: string }>>("/catalogs");
     return res.data;
   }
 

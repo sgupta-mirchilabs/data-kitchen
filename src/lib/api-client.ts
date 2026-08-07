@@ -77,16 +77,26 @@ async function handleResponse<T>(response: Response): Promise<ApiResponse<T>> {
   return response.json();
 }
 
-export function setSelectedOrganization(orgId: string): void {
+const ORG_NAME_KEY = "dk-selected-org-name";
+
+export function setSelectedOrganization(orgId: string, orgName?: string): void {
   sessionStorage.setItem(ORG_STORAGE_KEY, orgId);
+  // Display-only. Never used for authorization — the server re-validates the
+  // organization id on every request.
+  if (orgName) sessionStorage.setItem(ORG_NAME_KEY, orgName);
 }
 
 export function getSelectedOrganization(): string | null {
   return sessionStorage.getItem(ORG_STORAGE_KEY);
 }
 
+export function getSelectedOrganizationName(): string | null {
+  return sessionStorage.getItem(ORG_NAME_KEY);
+}
+
 export function clearSelectedOrganization(): void {
   sessionStorage.removeItem(ORG_STORAGE_KEY);
+  sessionStorage.removeItem(ORG_NAME_KEY);
 }
 
 export const api = {
