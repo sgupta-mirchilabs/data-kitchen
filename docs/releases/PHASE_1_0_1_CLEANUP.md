@@ -69,6 +69,40 @@ Resolution: row 5 will overwrite row 2.
 
 Detection runs over the **whole file**. `preview.sampleRows` is only the first 20 rows, so scanning it would have understated the warning; `uploadAndPreview` now exposes the full row set server-side for this check. That set is never returned to the client.
 
+### 1.3b Existing-product overwrite warning at preview
+
+Added during sign-off, after an operator observed that re-uploading a
+previously imported file warned about only the in-file duplicate.
+
+The in-file warning covers collisions **within the upload**. Rows colliding
+with products **already in the catalog** were silent until the results screen.
+For the reported file that meant the preview said *"1 row will be superseded"*
+when the import would in fact modify **4 existing products** — verified against
+the live catalog, and matching the batch's own `createdProducts: 0,
+updatedProducts: 5`.
+
+The catalog collision is the more consequential one: an in-file duplicate
+overwrites data seconds old, whereas a catalog collision overwrites data that
+may have been curated over weeks — and there is no product edit or delete in
+the UI (DB-012) to undo it. Saved mapping templates made repeat imports
+frictionless, so this path became common exactly as the warning became
+inadequate.
+
+Preview now states the projection before anything is written:
+
+```
+This import will update 4 existing products and create 0 new products.
+Existing products affected: NF-APEX-M-BLK, SG-HDPH-WHT, GD-FERT-5LB, PT-PAINT-NVY-1GAL
+Their current values will be replaced by this file. Previous values remain in
+each product's history.
+```
+
+Matching mirrors `findDuplicate` exactly — SKU first, then GTIN, scoped to the
+target catalog — so the projection agrees with what the import will do. In-file
+repeats collapse to a single product, matching the resolver. Read-only: no
+change to merge behaviour, the pipeline, or any model. One batched query rather
+than one per row.
+
 ### 1.4 Import summary
 
 Replaces "Import Successful" with Products Created, Products Updated, Warnings, Errors, Skipped, Duration, Catalog, Organization, Source file, and Import ID — plus whether a mapping template was saved or updated. Actions are **Open Catalog** and **Import Another File**. Validation warnings and errors are listed with their row numbers.
@@ -127,17 +161,18 @@ All deferrals are tracked permanently in [DEFERRED_BACKLOG.md](../DEFERRED_BACKL
 
 | Suite | Result |
 |---|---|
-| Backend unit + integration | **154 passed** (14 files) |
+| Backend unit + integration | **164 passed** (15 files) |
 | Frontend | **21 passed** |
 | Frontend typecheck | ✅ clean |
 | Backend typecheck | ✅ clean |
 | Production build | ✅ exit 0, no `DEV_AUTH_TOKEN` in bundle |
 | Lint (`src/`) | ✅ 0 issues |
 
-**44 new backend cases** in this sprint:
+**54 new backend cases** in this sprint:
 
 - **Validation (13)** — check digit at each valid length, wrong check digit, non-numeric, unsupported length, missing, UPC length rule, upc-like column detection, and an assertion that **no issue is ever blocking**.
 - **Duplicate detection (11)** — the real KI-3 case from `Import 08.07 1.txt` (rows 2 and 5), row ordering, trimming, case sensitivity, blank keys, mapped-header indirection, multiple groups, overwritten-row counting.
+- **Import projection (10)** — the exact operator-reported scenario, GTIN fallback, SKU precedence, catalog scoping, whitespace, and an assertion that 500 rows issue a single query.
 - **Template persistence (5)** — including a regression test that reproduces PostgreSQL JSONB key reordering, so an order-sensitive equality check fails it.
 - **Template matching (15)** — fingerprint stability, order independence, casing independence, add/remove sensitivity, exact match re-pointing to actual header spellings, version preference, source-type isolation, partial pre-application, new/missing header reporting, coverage ranking, and no-match behaviour.
 
@@ -205,6 +240,10 @@ Everything requested is implemented, tested, built and deployed, and the two kno
 1. **`warningRows` recorded 0** while the summary listed 5 warnings. Validation warnings were not counted, only parse warnings, so Import History understated every import. Fixed in `48b7b8a`.
 2. **Template version churn.** Re-importing an unchanged file created a new version each time (v1 → v2 → …). PostgreSQL JSONB normalizes key order on write, so the order-sensitive `JSON.stringify` equality check never matched and the "unchanged" branch was unreachable. Fixed in `93cf247`, with a regression test whose Prisma stand-in reproduces JSONB key reordering.
 3. **Duplicate warning did not state that nothing was committed.** Five of the six required elements were present; the not-yet-committed guarantee was only *implied* by "Continue import?". Now stated outright: **"Nothing has been imported yet. No products have been created or updated."**
+4. **The preview action was mislabelled.** On an exact template match the wizard imports immediately, but the button still read "Map Fields" — promising a screen the operator would never see. Now reads **"Import Now"** when a template covers the file. Fixed in `1e55885`.
+5. **Existing-product overwrites were not warned about at all.** See §1.3b — the preview understated impact 5x on a repeat import. Fixed in `b44010b`.
+
+Every one of these five was found by running the system, not by the test suite. The suites verify logic; they cannot tell you that a button lies or that a warning understates its own scope.
 
 Items in §6 remain **partially delivered and are accepted as known gaps**, tracked as DB-002 and DB-003 in the [Deferred Backlog](../DEFERRED_BACKLOG.md).
 

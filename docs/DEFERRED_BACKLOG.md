@@ -209,4 +209,4 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 
 **Status:** Backlog
 
-**Note.** Currently there is no way to remove products imported into the wrong catalog through the UI — relevant now that catalog selection is explicit but mistakes remain possible.
+**Note.** Currently there is no way to remove products imported into the wrong catalog through the UI — relevant now that catalog selection is explicit but mistakes remain possible. This absence is also why the Phase 1.0.1 preview warns before overwriting existing products: without an undo, the warning is the only safeguard.
