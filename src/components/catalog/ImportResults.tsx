@@ -1,6 +1,8 @@
-import { CheckCircle2, AlertTriangle, XCircle, Package, RefreshCw, ArrowRight } from "lucide-react";
+import { CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
+import { getSelectedOrganizationName } from "../../lib/api-client";
 
-interface ImportResultData {
+interface ResultsData {
+  importBatchId?: string;
   totalRows: number;
   successfulRows: number;
   warningRows: number;
@@ -9,133 +11,184 @@ interface ImportResultData {
   updatedProducts: number;
   warnings: Array<{ rowNumber?: number; message: string }>;
   errors: Array<{ rowNumber?: number; message: string }>;
+  validationIssues?: Array<{ rowNumber: number; code: string; message: string; field: string }>;
+  skippedRows?: number;
+  durationMs?: number;
+  filename?: string;
+  savedTemplate?: { id: string; version: number; created: boolean } | null;
 }
 
 interface Props {
-  results: ImportResultData;
+  results: ResultsData;
+  filename?: string;
+  catalogName?: string;
   onViewCatalog: () => void;
   onUploadAnother: () => void;
 }
 
-export function ImportResults({ results, onViewCatalog, onUploadAnother }: Props) {
-  const isSuccess = results.failedRows === 0;
-  const isPartial = results.failedRows > 0 && results.successfulRows > 0;
+function formatDuration(ms?: number): string {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  return s < 60 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
+export function ImportResults({ results, filename, catalogName, onViewCatalog, onUploadAnother }: Props) {
+  const failed = results.failedRows > 0 || results.errors.length > 0;
+  const warned = results.warningRows > 0 || results.warnings.length > 0;
+  const organizationName = getSelectedOrganizationName();
+
+  const headline = failed
+    ? { icon: XCircle, color: "var(--red)", bg: "var(--red-dim)", text: "Import completed with errors" }
+    : warned
+      ? { icon: AlertTriangle, color: "var(--amber)", bg: "var(--amber-dim)", text: "Import completed with warnings" }
+      : { icon: CheckCircle2, color: "var(--green)", bg: "var(--green-dim)", text: "Import completed" };
+  const HeadlineIcon = headline.icon;
+
+  const counts = [
+    { label: "Products Created", value: results.createdProducts },
+    { label: "Products Updated", value: results.updatedProducts },
+    { label: "Warnings", value: results.warnings.length, warn: results.warnings.length > 0 },
+    { label: "Errors", value: results.errors.length, bad: results.errors.length > 0 },
+    { label: "Skipped", value: results.skippedRows ?? 0 },
+  ];
+
+  const details: Array<[string, string]> = [
+    ["Duration", formatDuration(results.durationMs)],
+    ["Catalog", catalogName ?? "—"],
+    ["Organization", organizationName ?? "—"],
+    ["Source file", results.filename ?? filename ?? "—"],
+    ["Import ID", results.importBatchId ?? "—"],
+  ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Status header */}
       <div style={{
-        display: "flex", alignItems: "center", gap: 12,
-        padding: "16px 20px", borderRadius: 8,
-        background: isSuccess ? "var(--green-dim)" : isPartial ? "var(--amber-dim)" : "var(--red-dim)",
-        border: `1px solid ${isSuccess ? "rgba(34,197,94,0.2)" : isPartial ? "rgba(245,158,11,0.2)" : "rgba(239,68,68,0.2)"}`,
+        display: "flex", alignItems: "center", gap: 10, padding: "12px 14px",
+        borderRadius: 8, background: headline.bg, border: `1px solid ${headline.color}33`,
       }}>
-        {isSuccess && <CheckCircle2 size={20} color="var(--green)" />}
-        {isPartial && <AlertTriangle size={20} color="var(--amber)" />}
-        {!isSuccess && !isPartial && <XCircle size={20} color="var(--red)" />}
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
-            {isSuccess ? "Import completed successfully" : isPartial ? "Import completed with warnings" : "Import failed"}
-          </div>
-          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-            {results.totalRows} rows processed
-          </div>
+        <HeadlineIcon size={17} color={headline.color} />
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+          {headline.text}
+        </div>
+        <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)" }}>
+          {results.successfulRows}/{results.totalRows} rows processed
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Counts */}
       <div style={{
-        display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1,
+        display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 1,
         background: "var(--border)", borderRadius: 8, overflow: "hidden",
         border: "1px solid var(--border)",
       }}>
-        {[
-          { icon: Package, label: "Created", value: results.createdProducts, color: "var(--green)" },
-          { icon: RefreshCw, label: "Updated", value: results.updatedProducts, color: "var(--blue)" },
-          { icon: AlertTriangle, label: "Warnings", value: results.warningRows, color: "var(--amber)" },
-          { icon: XCircle, label: "Failed", value: results.failedRows, color: "var(--red)" },
-        ].map(({ icon: Icon, label, value, color }) => (
-          <div key={label} style={{ background: "var(--surface)", padding: "12px 14px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}>
-              <Icon size={11} color={value > 0 ? color : "var(--text-muted)"} />
-              <span style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>{label}</span>
+        {counts.map((c) => (
+          <div key={c.label} style={{ background: "var(--surface)", padding: "12px 14px" }}>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 4 }}>
+              {c.label}
             </div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: value > 0 ? color : "var(--text-primary)", letterSpacing: "-0.02em" }}>
-              {value}
+            <div style={{
+              fontSize: 18, fontWeight: 700, letterSpacing: "-0.02em",
+              color: c.bad ? "var(--red)" : c.warn ? "var(--amber)" : "var(--text-primary)",
+            }}>
+              {c.value}
             </div>
           </div>
         ))}
       </div>
 
-      {/* Errors */}
+      {/* Provenance of this run */}
+      <div style={{
+        border: "1px solid var(--border-subtle)", borderRadius: 8,
+        background: "var(--surface)", padding: "10px 14px",
+      }}>
+        {details.map(([k, v]) => (
+          <div key={k} style={{ display: "flex", gap: 12, padding: "3px 0", fontSize: 11 }}>
+            <span style={{ width: 110, color: "var(--text-muted)", flexShrink: 0 }}>{k}</span>
+            <span style={{
+              color: "var(--text-secondary)", fontFamily: k === "Import ID" ? "monospace" : undefined,
+              wordBreak: "break-all",
+            }}>
+              {v}
+            </span>
+          </div>
+        ))}
+        {results.savedTemplate && (
+          <div style={{ display: "flex", gap: 12, padding: "3px 0", fontSize: 11 }}>
+            <span style={{ width: 110, color: "var(--text-muted)", flexShrink: 0 }}>Mapping</span>
+            <span style={{ color: "var(--green)" }}>
+              {results.savedTemplate.created ? "Saved as new template" : "Existing template updated"} (v{results.savedTemplate.version})
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Validation issues */}
+      {results.validationIssues && results.validationIssues.length > 0 && (
+        <IssueList
+          title={`Validation warnings (${results.validationIssues.length})`}
+          color="var(--amber)"
+          items={results.validationIssues.map((i) => ({ rowNumber: i.rowNumber, message: i.message }))}
+        />
+      )}
+
       {results.errors.length > 0 && (
-        <div style={{
-          borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden",
-          maxHeight: 200, overflowY: "auto",
-        }}>
-          <div style={{
-            padding: "8px 12px", background: "var(--surface-raised)",
-            fontSize: 10, fontWeight: 600, color: "var(--text-muted)",
-            letterSpacing: "0.06em", textTransform: "uppercase",
-            borderBottom: "1px solid var(--border)",
-          }}>
-            Errors ({results.errors.length})
-          </div>
-          {results.errors.slice(0, 20).map((err, i) => (
-            <div key={i} style={{
-              padding: "6px 12px", fontSize: 11, color: "var(--red)",
-              borderBottom: "1px solid var(--border-subtle)",
-              display: "flex", alignItems: "center", gap: 6,
-            }}>
-              <XCircle size={10} /> {err.message}
-            </div>
-          ))}
-        </div>
+        <IssueList title={`Errors (${results.errors.length})`} color="var(--red)" items={results.errors} />
       )}
 
-      {/* Warnings */}
-      {results.warnings.length > 0 && (
-        <div style={{
-          borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden",
-          maxHeight: 150, overflowY: "auto",
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onViewCatalog} style={{
+          padding: "8px 16px", borderRadius: 6, border: "none",
+          background: "var(--mirchi)", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer",
         }}>
-          <div style={{
-            padding: "8px 12px", background: "var(--surface-raised)",
-            fontSize: 10, fontWeight: 600, color: "var(--text-muted)",
-            letterSpacing: "0.06em", textTransform: "uppercase",
-            borderBottom: "1px solid var(--border)",
-          }}>
-            Warnings ({results.warnings.length})
-          </div>
-          {results.warnings.slice(0, 20).map((w, i) => (
-            <div key={i} style={{
-              padding: "6px 12px", fontSize: 11, color: "var(--amber)",
-              borderBottom: "1px solid var(--border-subtle)",
-              display: "flex", alignItems: "center", gap: 6,
-            }}>
-              <AlertTriangle size={10} /> {w.message}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Actions */}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          Open Catalog
+        </button>
         <button onClick={onUploadAnother} style={{
-          padding: "7px 16px", borderRadius: 6, border: "1px solid var(--border)",
-          background: "var(--surface)", color: "var(--text-secondary)",
+          padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)",
+          background: "var(--surface-raised)", color: "var(--text-secondary)",
           fontSize: 12, fontWeight: 500, cursor: "pointer",
         }}>
-          Upload Another File
+          Import Another File
         </button>
-        <button onClick={onViewCatalog} style={{
-          padding: "7px 16px", borderRadius: 6, border: "none",
-          background: "var(--mirchi)", color: "white",
-          fontSize: 12, fontWeight: 600, cursor: "pointer",
-          display: "flex", alignItems: "center", gap: 6,
-        }}>
-          View Catalog <ArrowRight size={12} />
-        </button>
+      </div>
+    </div>
+  );
+}
+
+function IssueList({
+  title, color, items,
+}: {
+  title: string;
+  color: string;
+  items: Array<{ rowNumber?: number; message: string }>;
+}) {
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{
+        padding: "8px 14px", background: "var(--surface-raised)",
+        borderBottom: "1px solid var(--border)", fontSize: 11, fontWeight: 600, color,
+      }}>
+        {title}
+      </div>
+      <div style={{ maxHeight: 180, overflowY: "auto" }}>
+        {items.slice(0, 50).map((item, i) => (
+          <div key={i} style={{
+            padding: "6px 14px", fontSize: 11, color: "var(--text-secondary)",
+            borderBottom: i < Math.min(items.length, 50) - 1 ? "1px solid var(--border-subtle)" : "none",
+          }}>
+            {item.rowNumber != null && (
+              <span style={{ color: "var(--text-muted)", fontFamily: "monospace", marginRight: 8 }}>
+                row {item.rowNumber}
+              </span>
+            )}
+            {item.message}
+          </div>
+        ))}
+        {items.length > 50 && (
+          <div style={{ padding: "6px 14px", fontSize: 11, color: "var(--text-muted)" }}>
+            …and {items.length - 50} more.
+          </div>
+        )}
       </div>
     </div>
   );

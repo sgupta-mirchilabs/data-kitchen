@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify";
 import "../types.js";
 import { ImportService } from "../services/import.service.js";
 import { suggestFieldMappings, type FieldMapping } from "../services/normalizer.js";
+import { detectDuplicateSkus, countOverwrittenRows } from "../services/duplicate-detection.js";
+import { findTemplateMatch, saveTemplate } from "../services/mapping-template.service.js";
 import { ValidationError, FileTooLargeError } from "../errors/api-errors.js";
 import { requirePermission } from "../auth/permissions.js";
 import { writeAuditLog } from "../services/audit.service.js";
@@ -52,7 +54,20 @@ export async function importRoutes(app: FastifyInstance) {
         sourceSystem,
       );
 
-      const suggestedMappings = suggestFieldMappings(result.preview.headers);
+      const autoMappings = suggestFieldMappings(result.preview.headers);
+      const fileType = file.filename.toLowerCase().endsWith(".json") ? "json" : "csv";
+
+      // A saved template for this header shape takes precedence over
+      // alias-based auto-suggestion — it reflects a real operator decision.
+      const templateMatch = await findTemplateMatch(
+        app.prisma, ctx.organizationId, result.preview.headers, fileType,
+      );
+      const suggestedMappings = { ...autoMappings, ...templateMatch.appliedMappings };
+
+      // Warn about repeated business keys before the operator commits (KI-3).
+      // Over the WHOLE file — preview.sampleRows is only the first 20 rows, so
+      // scanning it would miss duplicates and understate the warning.
+      const duplicateGroups = detectDuplicateSkus(result.allRows, suggestedMappings.sku);
 
       await writeAuditLog(app.prisma, {
         organizationId: ctx.organizationId,
@@ -70,6 +85,18 @@ export async function importRoutes(app: FastifyInstance) {
           importBatchId: result.importBatchId,
           preview: result.preview,
           suggestedMappings,
+          templateMatch: {
+            kind: templateMatch.kind,
+            templateId: templateMatch.template?.id ?? null,
+            version: templateMatch.template?.version ?? null,
+            coverage: templateMatch.coverage,
+            newHeaders: templateMatch.newHeaders,
+            missingHeaders: templateMatch.missingHeaders,
+          },
+          duplicates: {
+            groups: duplicateGroups,
+            overwrittenRows: countOverwrittenRows(duplicateGroups),
+          },
         },
       });
     },
@@ -130,7 +157,7 @@ export async function importRoutes(app: FastifyInstance) {
     return reply.send({ data: batch });
   });
 
-  app.post<{ Params: { id: string }; Body: { fieldMappings: FieldMapping } }>(
+  app.post<{ Params: { id: string }; Body: { fieldMappings: FieldMapping; templateMode?: "new-version" | "replace" } }>(
     "/imports/:id/confirm",
     async (request, reply) => {
       const ctx = request.tenantContext;
@@ -143,6 +170,32 @@ export async function importRoutes(app: FastifyInstance) {
       }
 
       const results = await importService.confirmImport(ctx, request.params.id, fieldMappings);
+
+      // Record the mapping the operator actually confirmed so the next upload of
+      // the same shape needs no mapping work. Best-effort: a template failure
+      // must never fail an import that already succeeded.
+      let savedTemplate: { id: string; version: number; created: boolean } | null = null;
+      if (results.status === "completed") {
+        try {
+          const batch = await app.prisma.importBatch.findUnique({
+            where: { id: request.params.id },
+            select: { detectedHeaders: true, fileType: true },
+          });
+          const headers = (batch?.detectedHeaders as string[] | null) ?? [];
+          if (headers.length > 0) {
+            savedTemplate = await saveTemplate(app.prisma, {
+              organizationId: ctx.organizationId,
+              sourceType: batch?.fileType ?? "csv",
+              headers,
+              mappings: fieldMappings as Record<string, string>,
+              actor: ctx.displayName,
+              mode: (request.body as { templateMode?: "new-version" | "replace" }).templateMode,
+            });
+          }
+        } catch (err) {
+          request.log.warn({ err, importBatchId: request.params.id }, "mapping template not saved");
+        }
+      }
 
       const auditAction = results.status === "completed" ? "import.completed" : "import.failed";
       await writeAuditLog(app.prisma, {
@@ -166,7 +219,7 @@ export async function importRoutes(app: FastifyInstance) {
         metadata: { createdProducts: results.createdProducts, updatedProducts: results.updatedProducts },
       });
 
-      return reply.send({ data: results });
+      return reply.send({ data: { ...results, savedTemplate } });
     },
   );
 

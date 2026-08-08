@@ -26,6 +26,21 @@ interface UploadResponse {
     metadata: Record<string, unknown>;
   };
   suggestedMappings: Record<string, string>;
+  templateMatch?: {
+    kind: "exact" | "partial" | "none";
+    templateId: string | null;
+    version: number | null;
+    coverage: number;
+    newHeaders: string[];
+    missingHeaders: string[];
+  };
+  duplicates?: {
+    groups: Array<{
+      sku: string; occurrences: number; rowNumbers: number[];
+      winningRow: number; overwrittenRows: number[];
+    }>;
+    overwrittenRows: number;
+  };
 }
 
 interface ImportResultData {
@@ -37,6 +52,11 @@ interface ImportResultData {
   updatedProducts: number;
   warnings: Array<{ rowNumber?: number; message: string }>;
   errors: Array<{ rowNumber?: number; message: string }>;
+  validationIssues?: Array<{ rowNumber: number; code: string; message: string; field: string }>;
+  skippedRows?: number;
+  durationMs?: number;
+  filename?: string;
+  savedTemplate?: { id: string; version: number; created: boolean } | null;
 }
 
 interface Props {
@@ -179,7 +199,19 @@ export function ImportWizard({ catalogId, catalogName, catalogType, onClose, onI
                 totalRows={uploadData.preview.totalRows}
                 warnings={uploadData.preview.warnings}
                 filename={filename}
-                onContinue={() => setStage("mapping")}
+                templateMatch={uploadData.templateMatch}
+                duplicates={uploadData.duplicates}
+                onContinue={() => {
+                  // An exact template match already resolves every column, so the
+                  // mapping screen would ask the operator to re-confirm work they
+                  // have already done. They can still open it via Review Mapping.
+                  if (uploadData.templateMatch?.kind === "exact") {
+                    void handleConfirm(uploadData.suggestedMappings);
+                  } else {
+                    setStage("mapping");
+                  }
+                }}
+                onReviewMapping={() => setStage("mapping")}
                 onCancel={onClose}
               />
             </motion.div>
@@ -206,6 +238,8 @@ export function ImportWizard({ catalogId, catalogName, catalogType, onClose, onI
             <motion.div key="results" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <ImportResults
                 results={results}
+                filename={filename}
+                catalogName={catalogName}
                 onViewCatalog={handleViewCatalog}
                 onUploadAnother={handleUploadAnother}
               />

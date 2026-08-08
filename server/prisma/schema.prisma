@@ -16,11 +16,12 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
 
-  memberships   OrganizationMembership[]
-  catalogs      Catalog[]
-  importBatches ImportBatch[]
-  products      CanonicalProduct[]
-  auditLogs     AuditLog[]
+  memberships      OrganizationMembership[]
+  catalogs         Catalog[]
+  importBatches    ImportBatch[]
+  products         CanonicalProduct[]
+  auditLogs        AuditLog[]
+  mappingTemplates MappingTemplate[]
 
   @@map("organization")
 }
@@ -90,8 +91,8 @@ model Catalog {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  products     CanonicalProduct[]
+  organization  Organization       @relation(fields: [organizationId], references: [id])
+  products      CanonicalProduct[]
   importBatches ImportBatch[]
 
   @@index([organizationId], name: "idx_catalog_org")
@@ -140,35 +141,35 @@ model ImportBatch {
 /// schema supports this migration without data loss — add a product_identity table,
 /// backfill one identity per product, add FK, populate.
 model CanonicalProduct {
-  id               String   @id @default(uuid()) @db.Uuid
-  organizationId   String   @map("organization_id") @db.Uuid
-  catalogId        String   @map("catalog_id") @db.Uuid
-  sku              String?  @db.VarChar(255)
-  gtin             String?  @db.VarChar(14)
-  brand            String?  @db.VarChar(255)
-  productName      String?  @map("product_name") @db.VarChar(500)
-  shortDescription String?  @map("short_description") @db.Text
-  longDescription  String?  @map("long_description") @db.Text
-  category         String?  @db.VarChar(255)
-  manufacturer     String?  @db.VarChar(255)
-  lifecycleStatus     String @default("draft") @map("lifecycle_status") @db.VarChar(20)
-  dataQualityStatus   String @default("needs_review") @map("data_quality_status") @db.VarChar(30)
-  attributes       Json     @default("{}")
-  dimensions       Json     @default("{}")
-  packaging        Json     @default("{}")
-  compliance       Json     @default("{}")
-  digitalAssets    Json     @default("[]") @map("digital_assets")
-  identifiers      Json     @default("{}")
-  createdBy        String?  @map("created_by") @db.VarChar(255)
-  updatedBy        String?  @map("updated_by") @db.VarChar(255)
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  catalogId         String   @map("catalog_id") @db.Uuid
+  sku               String?  @db.VarChar(255)
+  gtin              String?  @db.VarChar(14)
+  brand             String?  @db.VarChar(255)
+  productName       String?  @map("product_name") @db.VarChar(500)
+  shortDescription  String?  @map("short_description") @db.Text
+  longDescription   String?  @map("long_description") @db.Text
+  category          String?  @db.VarChar(255)
+  manufacturer      String?  @db.VarChar(255)
+  lifecycleStatus   String   @default("draft") @map("lifecycle_status") @db.VarChar(20)
+  dataQualityStatus String   @default("needs_review") @map("data_quality_status") @db.VarChar(30)
+  attributes        Json     @default("{}")
+  dimensions        Json     @default("{}")
+  packaging         Json     @default("{}")
+  compliance        Json     @default("{}")
+  digitalAssets     Json     @default("[]") @map("digital_assets")
+  identifiers       Json     @default("{}")
+  createdBy         String?  @map("created_by") @db.VarChar(255)
+  updatedBy         String?  @map("updated_by") @db.VarChar(255)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
 
-  organization     Organization               @relation(fields: [organizationId], references: [id])
-  catalog          Catalog                    @relation(fields: [catalogId], references: [id])
-  sourceRecords    SourceRecord[]
-  provenance       FieldProvenance[]
-  history          CanonicalProductHistory[]
+  organization  Organization              @relation(fields: [organizationId], references: [id])
+  catalog       Catalog                   @relation(fields: [catalogId], references: [id])
+  sourceRecords SourceRecord[]
+  provenance    FieldProvenance[]
+  history       CanonicalProductHistory[]
 
   // Partial unique index on (catalog_id, sku) WHERE sku IS NOT NULL is applied
   // via custom SQL migration — Prisma does not support WHERE clauses on @@unique.
@@ -190,8 +191,8 @@ model SourceRecord {
   canonicalProductId String?  @map("canonical_product_id") @db.Uuid
   createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
-  importBatch      ImportBatch       @relation(fields: [importBatchId], references: [id])
-  canonicalProduct CanonicalProduct? @relation(fields: [canonicalProductId], references: [id])
+  importBatch      ImportBatch               @relation(fields: [importBatchId], references: [id])
+  canonicalProduct CanonicalProduct?         @relation(fields: [canonicalProductId], references: [id])
   provenance       FieldProvenance[]
   history          CanonicalProductHistory[]
 
@@ -228,15 +229,15 @@ model CanonicalProductHistory {
 }
 
 model FieldProvenance {
-  id                 String   @id @default(uuid()) @db.Uuid
-  canonicalProductId String   @map("canonical_product_id") @db.Uuid
-  canonicalField     String   @map("canonical_field") @db.VarChar(255)
-  sourceRecordId     String   @map("source_record_id") @db.Uuid
-  sourceField        String   @map("source_field") @db.VarChar(255)
-  originalValue      String?  @map("original_value") @db.Text
-  normalizedValue    String?  @map("normalized_value") @db.Text
-  normalizationMethod String? @map("normalization_method") @db.VarChar(100)
-  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  id                  String   @id @default(uuid()) @db.Uuid
+  canonicalProductId  String   @map("canonical_product_id") @db.Uuid
+  canonicalField      String   @map("canonical_field") @db.VarChar(255)
+  sourceRecordId      String   @map("source_record_id") @db.Uuid
+  sourceField         String   @map("source_field") @db.VarChar(255)
+  originalValue       String?  @map("original_value") @db.Text
+  normalizedValue     String?  @map("normalized_value") @db.Text
+  normalizationMethod String?  @map("normalization_method") @db.VarChar(100)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
   canonicalProduct CanonicalProduct @relation(fields: [canonicalProductId], references: [id])
   sourceRecord     SourceRecord     @relation(fields: [sourceRecordId], references: [id])
@@ -244,4 +245,34 @@ model FieldProvenance {
   @@index([canonicalProductId], name: "idx_provenance_product")
   @@index([sourceRecordId], name: "idx_provenance_source")
   @@map("field_provenance")
+}
+
+/// Saved field-mapping templates (Phase 1.0.1).
+///
+/// Keyed by (organization, sourceType, headerFingerprint) so a recurring export
+/// from the same system is recognised on upload and its mapping reapplied.
+/// Additive only — no existing model is altered, and imports work unchanged if
+/// no template matches.
+model MappingTemplate {
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  name              String?  @db.VarChar(255)
+  sourceType        String   @map("source_type") @db.VarChar(10)
+  /// Order-independent hash of the normalized header set.
+  headerFingerprint String   @map("header_fingerprint") @db.VarChar(64)
+  /// Header names as they appeared when saved, for partial-match reporting.
+  headers           Json
+  /// canonicalField -> sourceHeader
+  mappings          Json
+  version           Int      @default(1)
+  createdBy         String?  @map("created_by") @db.VarChar(255)
+  updatedBy         String?  @map("updated_by") @db.VarChar(255)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, sourceType, headerFingerprint, version], name: "uq_mapping_template_version")
+  @@index([organizationId, sourceType], name: "idx_mapping_template_org_type")
+  @@map("mapping_template")
 }

@@ -6,6 +6,7 @@ import { parseJson } from "./parser/json-parser.js";
 import type { ParseResult, PreviewResult } from "./parser/parser.types.js";
 import { normalizeRow, computeDataQualityStatus, type FieldMapping } from "./normalizer.js";
 import { findDuplicate } from "./duplicate-resolver.js";
+import { validateGtin, type ValidationIssue } from "./import-validation.js";
 import { diffProductFields, serializeHistoryValue } from "./history.js";
 import { ParseError, ValidationError } from "../errors/api-errors.js";
 import type { AppConfig } from "../config.js";
@@ -15,6 +16,12 @@ import { buildTenantStorageKey, createTenantScopedStorage } from "../storage/ten
 export interface UploadResult {
   importBatchId: string;
   preview: PreviewResult;
+  /**
+   * Every parsed row, not just the preview sample. Used server-side for
+   * whole-file checks such as duplicate-key detection; never returned to the
+   * client, which only receives preview.sampleRows.
+   */
+  allRows: Array<{ rowNumber: number; data: Record<string, string> }>;
 }
 
 export interface ImportResults {
@@ -28,6 +35,15 @@ export interface ImportResults {
   updatedProducts: number;
   warnings: Array<{ rowNumber?: number; message: string }>;
   errors: Array<{ rowNumber?: number; message: string }>;
+  /** Identifier validation issues, for the summary and Product Detail. */
+  validationIssues: Array<{ rowNumber: number } & ValidationIssue>;
+  /** Rows parsed but not turned into a product (currently always 0). */
+  skippedRows: number;
+  /** Wall-clock time for the confirm phase. */
+  durationMs: number;
+  filename: string;
+  catalogId: string;
+  organizationId: string;
 }
 
 function detectFileType(filename: string): "csv" | "json" {
@@ -90,6 +106,7 @@ export class ImportService {
 
     return {
       importBatchId: batch.id,
+      allRows: parseResult.rows,
       preview: {
         headers: parseResult.headers,
         sampleRows,
@@ -133,7 +150,9 @@ export class ImportService {
     let failedRows = 0;
     let createdProducts = 0;
     let updatedProducts = 0;
+    const startedAt = Date.now();
     const warnings: Array<{ rowNumber?: number; message: string }> = [];
+    const rowValidationIssues: Array<{ rowNumber: number } & ValidationIssue> = [];
     const errors: Array<{ rowNumber?: number; message: string }> = [];
 
     for (const warning of parseResult.warnings) {
@@ -146,7 +165,24 @@ export class ImportService {
         const qualityStatus = computeDataQualityStatus(normalized);
 
         const hasParseWarning = parseResult.warnings.some((w) => w.rowNumber === row.rowNumber);
-        const effectiveStatus = hasParseWarning ? "parse_warning" : qualityStatus;
+
+        // Lightweight identifier validation (KI-2). Never fails the row — an
+        // invalid GTIN still imports, but is surfaced and marked for review
+        // instead of being accepted silently.
+        const validationIssues: ValidationIssue[] = validateGtin(
+          normalized.gtin,
+          fieldMappings.gtin,
+        );
+        for (const issue of validationIssues) {
+          warnings.push({ rowNumber: row.rowNumber, message: issue.message });
+          rowValidationIssues.push({ rowNumber: row.rowNumber, ...issue });
+        }
+
+        const effectiveStatus = hasParseWarning
+          ? "parse_warning"
+          : validationIssues.length > 0
+            ? "needs_review"
+            : qualityStatus;
 
         const duplicate = await findDuplicate(
           this.prisma,
@@ -269,7 +305,7 @@ export class ImportService {
                 category: normalized.category,
                 manufacturer: normalized.manufacturer,
                 lifecycleStatus: "draft",
-                dataQualityStatus: matchStatus,
+                dataQualityStatus: validationIssues.length > 0 ? "needs_review" : matchStatus,
                 attributes: (normalized.attributes ?? {}) as unknown as any,
                 createdBy: ctx.displayName,
                 updatedBy: ctx.displayName,
@@ -341,7 +377,9 @@ export class ImportService {
         successfulRows,
         warningRows,
         failedRows,
-        errorSummary: errors.length > 0 ? { errors, warnings } as unknown as any : undefined,
+        errorSummary: (errors.length > 0 || rowValidationIssues.length > 0)
+          ? { errors, warnings, validationIssues: rowValidationIssues } as unknown as any
+          : undefined,
       },
     });
 
@@ -356,6 +394,12 @@ export class ImportService {
       updatedProducts,
       warnings,
       errors,
+      validationIssues: rowValidationIssues,
+      skippedRows: parseResult.rows.length - successfulRows - failedRows,
+      durationMs: Date.now() - startedAt,
+      filename: batch.filename,
+      catalogId: batch.catalogId,
+      organizationId: batch.organizationId,
     };
   }
 }

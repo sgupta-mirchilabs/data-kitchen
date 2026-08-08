@@ -18,13 +18,99 @@ interface Props {
   totalRows: number;
   warnings: ParseWarning[];
   filename: string;
+  templateMatch?: {
+    kind: "exact" | "partial" | "none";
+    version: number | null;
+    newHeaders: string[];
+    missingHeaders: string[];
+  };
+  duplicates?: {
+    groups: Array<{
+      sku: string; occurrences: number; rowNumbers: number[];
+      winningRow: number; overwrittenRows: number[];
+    }>;
+    overwrittenRows: number;
+  };
   onContinue: () => void;
+  onReviewMapping?: () => void;
   onCancel: () => void;
 }
 
-export function ImportPreview({ headers, sampleRows, totalRows, warnings, filename, onContinue, onCancel }: Props) {
+export function ImportPreview({ headers, sampleRows, totalRows, warnings, filename, templateMatch, duplicates, onContinue, onReviewMapping, onCancel }: Props) {
+  const dupGroups = duplicates?.groups ?? [];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Saved mapping template */}
+      {templateMatch && templateMatch.kind !== "none" && (
+        <div style={{
+          display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px",
+          borderRadius: 8, background: "var(--green-dim)",
+          border: "1px solid rgba(34,197,94,0.25)",
+        }}>
+          <CheckCircle2 size={15} color="var(--green)" style={{ marginTop: 1, flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+              {templateMatch.kind === "exact"
+                ? "Existing mapping applied."
+                : "Existing mapping applied to matching columns."}
+              {templateMatch.version != null && (
+                <span style={{ color: "var(--text-muted)", fontWeight: 400 }}> (v{templateMatch.version})</span>
+              )}
+            </div>
+            {templateMatch.kind === "partial" && (
+              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 3 }}>
+                {templateMatch.newHeaders.length > 0 && (
+                  <div>New columns needing mapping: {templateMatch.newHeaders.join(", ")}</div>
+                )}
+                {templateMatch.missingHeaders.length > 0 && (
+                  <div>Previously mapped columns not in this file: {templateMatch.missingHeaders.join(", ")}</div>
+                )}
+              </div>
+            )}
+          </div>
+          {onReviewMapping && (
+            <button onClick={onReviewMapping} style={{
+              padding: "4px 10px", fontSize: 11, borderRadius: 5,
+              border: "1px solid var(--border)", background: "var(--surface)",
+              color: "var(--text-secondary)", cursor: "pointer", flexShrink: 0,
+            }}>
+              Review Mapping
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Duplicate business keys within this file */}
+      {dupGroups.length > 0 && (
+        <div style={{
+          padding: "10px 14px", borderRadius: 8, background: "var(--amber-dim)",
+          border: "1px solid rgba(245,158,11,0.25)",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <AlertTriangle size={14} color="var(--amber)" />
+            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+              Duplicate SKU detected
+            </span>
+          </div>
+          {dupGroups.map((g) => (
+            <div key={g.sku} style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6 }}>
+              <div style={{ color: "var(--text-primary)" }}>
+                SKU <strong>{g.sku}</strong> appears {g.occurrences} times.
+              </div>
+              <div>Rows: {g.rowNumbers.join(", ")}</div>
+              <div>
+                Resolution: row {g.winningRow} will overwrite row{g.overwrittenRows.length > 1 ? "s" : ""}{" "}
+                {g.overwrittenRows.join(", ")}.
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+            {duplicates?.overwrittenRows ?? 0} row
+            {(duplicates?.overwrittenRows ?? 0) === 1 ? "" : "s"} will be superseded. Continue import?
+          </div>
+        </div>
+      )}
+
       {/* Summary */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",

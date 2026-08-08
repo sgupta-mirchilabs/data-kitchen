@@ -1,19 +1,24 @@
 import { Link, useLocation } from "react-router-dom";
+import { getSelectedOrganizationName } from "../../lib/api-client";
 import {
   UploadCloud, ShoppingBag, GitMerge, AlertTriangle,
   Send, MessageSquareWarning, Settings, ChevronRight, Flame,
 } from "lucide-react";
 
+/** Routes whose backend does not exist yet (Phase 2/3). */
+const NOT_AVAILABLE = new Set(["/readiness", "/mapping", "/validation", "/delivery", "/feedback"]);
+
 const NAV = [
   { href: "/intake", label: "Catalog Workspace", Icon: UploadCloud, badge: null, badgeColor: "" },
   { href: "/readiness", label: "Retailer Readiness", Icon: ShoppingBag, badge: null, badgeColor: "" },
-  { href: "/mapping", label: "Mapping Studio", Icon: GitMerge, badge: "3", badgeColor: "default" },
-  { href: "/validation", label: "Validation & Exceptions", Icon: AlertTriangle, badge: "12", badgeColor: "red" },
+  { href: "/mapping", label: "Mapping Studio", Icon: GitMerge, badge: null, badgeColor: "" },
+  { href: "/validation", label: "Validation & Exceptions", Icon: AlertTriangle, badge: null, badgeColor: "" },
   { href: "/delivery", label: "Delivery", Icon: Send, badge: null, badgeColor: "" },
-  { href: "/feedback", label: "Retail Feedback", Icon: MessageSquareWarning, badge: "8", badgeColor: "amber" },
+  { href: "/feedback", label: "Retail Feedback", Icon: MessageSquareWarning, badge: null, badgeColor: "" },
 ];
 
 export function Sidebar() {
+  const organizationName = getSelectedOrganizationName();
   const { pathname } = useLocation();
 
   return (
@@ -34,12 +39,15 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Session */}
-      <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border-subtle)", background: "var(--surface-raised)" }}>
-        <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4, letterSpacing: "0.06em", textTransform: "uppercase" }}>Active Session</div>
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Product360_Export_2026-07-31.xlsx</div>
-        <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>6 products · Walmart schema</div>
-      </div>
+      {/* Active organization — real value from the session, or nothing. */}
+      {organizationName && (
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border-subtle)", background: "var(--surface-raised)" }}>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4, letterSpacing: "0.06em", textTransform: "uppercase" }}>Organization</div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {organizationName}
+          </div>
+        </div>
+      )}
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: "8px 0", overflowY: "auto" }}>
@@ -57,6 +65,13 @@ export function Sidebar() {
               }}>
                 <Icon size={14} strokeWidth={active ? 2.5 : 2} />
                 <span style={{ flex: 1, fontSize: 12, fontWeight: active ? 600 : 400, letterSpacing: "0.01em" }}>{label}</span>
+                {!badge && NOT_AVAILABLE.has(href) && (
+                  <span style={{
+                    marginLeft: "auto", fontSize: 9, padding: "1px 5px", borderRadius: 8,
+                    background: "var(--surface-overlay)", color: "var(--text-muted)",
+                    letterSpacing: "0.04em", whiteSpace: "nowrap",
+                  }}>Not available yet</span>
+                )}
                 {badge && (
                   <span style={{
                     fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 10, minWidth: 18, textAlign: "center",
