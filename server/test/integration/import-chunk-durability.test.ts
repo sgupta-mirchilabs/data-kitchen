@@ -104,6 +104,12 @@ function service(client: PrismaClient = prisma): ImportService {
 async function stage(rows: number, poisonRow?: number): Promise<string> {
   const svc = service();
   const upload = await svc.uploadAndPreview(ctx, CATALOG, `dur_${rows}_${Date.now()}.csv`, makeCsv(rows, poisonRow));
+  // `acquireLease` deliberately arbitrates over one global queue, so a fixture
+  // sitting at `queued` — even for the moment between enqueue and claim — is
+  // claimable by any other suite running in parallel. max_attempts = 0 fails
+  // the `attempts < max_attempts` guard, making these batches invisible to it.
+  // These tests drive `executeImport` directly and never lease.
+  await prisma.importBatch.update({ where: { id: upload.importBatchId }, data: { maxAttempts: 0 } });
   await svc.enqueueImport(ctx, upload.importBatchId, MAPPINGS as never);
   await claim(upload.importBatchId);
   return upload.importBatchId;

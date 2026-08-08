@@ -96,6 +96,11 @@ interface Measurement {
 async function measure(rows: number, chunkSize: number, tag: string): Promise<Measurement> {
   const svc = new ImportService(prisma, storage, config);
   const upload = await svc.uploadAndPreview(ctx, CATALOG, `scale_${tag}.csv`, makeCsv(rows, tag));
+  // `acquireLease` arbitrates over one global queue, so a fixture sitting at
+  // `queued` is claimable by any suite running in parallel. max_attempts = 0
+  // fails its `attempts < max_attempts` guard and keeps these batches out of it;
+  // this suite drives `executeImport` directly and never leases.
+  await prisma.importBatch.update({ where: { id: upload.importBatchId }, data: { maxAttempts: 0 } });
   await svc.enqueueImport(ctx, upload.importBatchId, MAPPINGS as never);
   await prisma.importBatch.update({
     where: { id: upload.importBatchId },
