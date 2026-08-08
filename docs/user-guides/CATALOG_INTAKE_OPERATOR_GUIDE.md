@@ -142,6 +142,31 @@ Duplicates are detected across the **whole file**, not just the previewed rows.
 
 ---
 
+## 9b. Imports run in the background
+
+Once you confirm an import, Data Kitchen accepts it and processes it in the background. The screen shows live progress — rows processed, elapsed time — and says **"You can leave this page."**
+
+That is literal. You may navigate away, close the browser, or sign out. Processing continues, and even an application restart does not lose the run: it resumes from the last committed checkpoint.
+
+Return to **Import History** at any time to see the outcome.
+
+**Statuses you will see:**
+
+| Status | Meaning |
+|---|---|
+| Queued | Accepted and durably stored, waiting for a worker |
+| Processing | Rows are being committed; progress is shown |
+| Completed | Finished cleanly |
+| Completed with warnings | Finished; some rows raised validation warnings |
+| Failed | Could not complete. The reason is recorded |
+| Cancelled | Stopped on request |
+
+**Cancelling.** A **queued** import cancels immediately and imports nothing. A **processing** import stops at the next checkpoint — **rows already committed stay in the catalog and are not rolled back**. The screen tells you how many rows were committed before the stop.
+
+**Row limit.** A file exceeding the configured row limit is now **refused outright** and nothing is imported. Previously the extra rows were silently discarded and the import reported success. Split the file, or ask an administrator to raise `MAX_IMPORT_ROWS`.
+
+---
+
 ## 10. Import summary
 
 After every import:

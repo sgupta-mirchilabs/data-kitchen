@@ -80,7 +80,7 @@ The prototype validated the product concept and pipeline architecture with stake
 
 ### Phase 1.0.2: Import Scalability & Background Processing
 
-**Status:** In Progress — architecture proposed, **awaiting approval before implementation**.
+**Status:** In Progress — **Increment A (durability) deployed 2026-08-08**. Increment B (throughput) not started.
 
 **Purpose:** Make Catalog Intake safe and usable at hundreds to tens of thousands of rows without requiring the operator to hold an HTTP request or browser tab open.
 

@@ -16,7 +16,7 @@
 | **Phase 0** | Prototype | ✅ Complete |
 | **Phase 1** | Catalog Intake | ✅ Complete |
 | **Phase 1.0.1** | Cleanup Sprint | ✅ Complete |
-| **Phase 1.0.2** | Import Scalability & Background Processing | 🔄 **Current** — proposed, awaiting approval |
+| **Phase 1.0.2** | Import Scalability & Background Processing | 🔄 **Current** — Increment A deployed, awaiting acceptance |
 | **Phase 1.1** | PDF Intake | ⬜ Next |
 | **Phase 2** | Retail Intelligence Library | ⬜ Planned |
 | **Phase 3** | Mapping Engine | ⬜ Planned |

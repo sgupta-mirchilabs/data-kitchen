@@ -1,6 +1,6 @@
 # Async Import Architecture — Phase 1.0.2 Audit & Proposal
 
-> **Status:** Proposal — **awaiting approval. No implementation has begun.**
+> **Status:** Approved. **Increment A delivered and deployed 2026-08-08** (commit `df12cd6`). Increment B not started.
 > **Date:** 2026-08-08
 > **Scope:** Make Catalog Intake safe and usable at hundreds → tens of thousands of rows without holding an HTTP request open.
 > **Preserves:** canonical model, SKU-first/GTIN-second resolution, catalog scoping, organization isolation, immutable SourceRecord, provenance, history, audit, mapping templates, validation and duplicate warnings, merge semantics, Blob Storage layout.
@@ -396,3 +396,38 @@ The lease model above is deliberately broker-shaped: `locked_by` / `lock_expires
 3. **Streaming parse** — accept deferral pending measurement?
 4. **Historical `parsing` batches** — backfill to `failed`, or leave?
 5. **Cancellation scope** — is "queued cancels immediately, processing stops at the next chunk boundary, committed rows are never rolled back" acceptable?
+
+
+---
+
+## 9. Increment A — as built
+
+Delivered and deployed. The commit pipeline's per-row logic is unchanged; only the surrounding chunk loop is new.
+
+| Item | Status |
+|---|---|
+| Additive `import_batch` job columns + partial queue index | ✅ 12/12 columns live, index present |
+| State machine with guarded transitions | ✅ 11 unit tests |
+| Lease / heartbeat / reclaim | ✅ 18 DB-backed tests |
+| Single-instance in-process worker | ✅ verified leasing in the cloud |
+| 202 Accepted confirm flow | ✅ |
+| Status endpoint + cancel endpoint | ✅ |
+| Frontend progress, "you can leave this page", cancel | ✅ |
+| Import History job states | ✅ |
+| Lifecycle audit events (never per row) | ✅ |
+| Cancellation semantics | ✅ approved model implemented |
+| Observability | ✅ blob/parse/chunk timings, heap, attempts, queue depth |
+| Row-limit truncation fixed | ✅ refuses with `IMPORT_ROW_LIMIT_EXCEEDED` |
+| Legacy backfill | ✅ no-op (no interrupted rows existed) |
+
+**Live worker proof.** A probe batch pointing at a nonexistent blob was queued directly into the cloud database. Within 19.5 s the deployed worker leased it, retried to the bounded limit, and reached terminal `failed` with `errorCode: PROCESSING_FAILED` and the lease released — demonstrating polling, lease acquisition, bounded retry, diagnostics and terminal-state correctness against the real environment rather than a stub.
+
+### Deviations from the proposal
+
+**Progress granularity.** The proposal said progress advances "in the same transaction as the chunk writes". The commit pipeline uses one transaction *per row*, and changing that would be the rewrite Increment A excludes. Progress is therefore stamped inside the transaction of the row that *closes* each chunk. The invariant the requirement exists to protect — progress can never exceed committed work — holds exactly, and a rollback test asserts it.
+
+**`catalog:read` reused for status.** No `import:read` permission exists, and adding one would change the authorization model, which this phase does not touch.
+
+### Not yet proven
+
+Everything above is verified by test or by the live probe. What has **not** been observed is a real operator import running end to end through the queue — that is the acceptance run.

@@ -230,7 +230,13 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 
 **Status:** Backlog
 
-**Triggers.** Parse cost becoming material relative to commit cost, or a genuine review-before-commit gate.
+**Triggers.**
+- Expensive parsing or extraction, where re-deriving rows on retry is costly rather than cheap
+- A review-before-commit workflow
+- Material parse or resume cost relative to commit cost
+- Substantially larger import sizes than the current 10,000-row limit
+
+**Phase 1.1 note.** PDF Intake is likely to strengthen the case materially. Extracting structured data from a document is expensive and lossy in a way CSV parsing is not, and extracted state plausibly needs durable operator review before commit. Both are staging's core justifications, so this should be re-evaluated when Phase 1.1 is designed rather than treated as settled.
 
 ---
 
