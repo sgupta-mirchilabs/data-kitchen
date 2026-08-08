@@ -37,6 +37,14 @@ function toStored(row: {
   };
 }
 
+/** Stable, key-order-independent form of a mapping, for equality checks. */
+function canonicalize(mappings: unknown): string {
+  const entries = Object.entries((mappings ?? {}) as Record<string, string>).sort(
+    ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0),
+  );
+  return JSON.stringify(entries);
+}
+
 export async function findTemplateMatch(
   prisma: PrismaClient,
   organizationId: string,
@@ -92,8 +100,13 @@ export async function saveTemplate(
   const mode = input.mode ?? "new-version";
 
   // An identical mapping is not worth a new version — just refresh the row.
-  const unchanged =
-    newest && JSON.stringify(newest.mappings) === JSON.stringify(mappings);
+  //
+  // The comparison must be key-order independent: PostgreSQL JSONB normalizes
+  // key order on write (by key length, then bytewise), while the incoming
+  // mapping arrives in the order the client sent it. A plain JSON.stringify
+  // comparison therefore never matches, and every re-import of an unchanged
+  // file would mint another version.
+  const unchanged = newest && canonicalize(newest.mappings) === canonicalize(mappings);
 
   if (newest && (mode === "replace" || unchanged)) {
     const updated = await prisma.mappingTemplate.update({
