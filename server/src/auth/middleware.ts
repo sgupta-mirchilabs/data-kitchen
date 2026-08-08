@@ -49,14 +49,41 @@ export function registerAuthHook(
         ? authHeader.slice(7)
         : authHeader;
 
+      // Authentication is handled separately from tenant resolution.
+      //
+      // Both used to share one catch, which rethrew any error carrying a 4xx
+      // statusCode so tenant errors (403 FORBIDDEN, INVALID_ORGANIZATION) could
+      // reach the error handler intact. But an invalid token also raises
+      // AppError(401), so it took that same rethrow and never reached the audit
+      // write below — invalid-credential attempts were answered with 401 and
+      // left no audit trail at all, while benign missing-token probes were
+      // recorded. Splitting the two keeps tenant errors propagating while
+      // making authentication failures auditable.
+      let authenticatedUser;
       try {
-        const authenticatedUser = await authProvider.validateToken(token);
-        request.authenticatedUser = authenticatedUser;
+        authenticatedUser = await authProvider.validateToken(token);
+      } catch {
+        await writeAuditLog(app.prisma, {
+          action: "authentication.failed",
+          result: "failure",
+          requestId: reqId,
+          // Never record the token or any part of it.
+          metadata: { reason: "invalid_token" },
+          ipAddress: getClientIp(request),
+          userAgent: request.headers["user-agent"] as string,
+        });
+        return reply.status(401).send({
+          error: { code: "UNAUTHORIZED", message: "Invalid or expired token" },
+        });
+      }
 
-        if (AUTH_ONLY_ROUTES.has(routePath)) {
-          return;
-        }
+      request.authenticatedUser = authenticatedUser;
 
+      if (AUTH_ONLY_ROUTES.has(routePath)) {
+        return;
+      }
+
+      try {
         const selectedOrgId = request.headers["x-organization-id"] as string | undefined;
         const tenantContext = await tenantResolver.resolve(
           authenticatedUser,

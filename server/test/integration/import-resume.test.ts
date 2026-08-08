@@ -29,7 +29,11 @@ async function makeBatch(totalRows: number): Promise<string> {
       filename: `resume-${totalRows}.csv`, fileType: "csv",
       status: "processing", totalRows, progressRows: 0,
       startedAt: new Date(), lockedBy: "test-worker",
-      lockExpiresAt: new Date(Date.now() + 60_000),
+      // Far-future lease so these fixtures are never claimable. acquireLease is
+      // deliberately global (one queue), so a short lease expiring during the
+      // 42s 250-row test would let another suite — or the live worker — reclaim
+      // a fixture batch that points at no real file.
+      lockExpiresAt: new Date(Date.now() + 3_600_000),
     },
   });
   return b.id;
