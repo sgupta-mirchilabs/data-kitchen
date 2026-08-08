@@ -114,9 +114,12 @@ Requested behaviour that belongs to later phases, documented rather than built:
 | Mapping Engine (transforms, retailer targets, versioned rules) | 3 | Saved templates here are *column mappings only* — no transformation logic |
 | Validation Engine (configurable rules, retailer requirements, readiness scoring) | 2/3 | This sprint validates identifiers only |
 | Delivery, Retail Feedback | 3+ | Navigation present, labelled unavailable |
-| Clear-on-blank import semantics | TBD | Requires an explicit configurable policy — see KI-4 |
-| Template management UI (rename, delete, browse versions) | TBD | Templates are currently created and matched automatically, with no browse screen |
-| Product Detail restructure, Catalog Workspace polish | **Partially delivered** | See §6 |
+| Clear-on-blank import semantics | TBD | DB-008 |
+| Saved Mapping Templates management UI | 1.0.2 | **DB-001** — raised by the operator during acceptance; highest-priority deferral |
+| Product Detail restructure | 1.0.2 | DB-002 — partially delivered, see §6 |
+| Catalog Workspace polish (sticky filters/search) | 1.0.2 | DB-003 — partially delivered, see §6 |
+
+All deferrals are tracked permanently in [DEFERRED_BACKLOG.md](../DEFERRED_BACKLOG.md).
 
 ---
 
@@ -124,17 +127,18 @@ Requested behaviour that belongs to later phases, documented rather than built:
 
 | Suite | Result |
 |---|---|
-| Backend unit + integration | **149 passed** (13 files) |
+| Backend unit + integration | **154 passed** (14 files) |
 | Frontend | **21 passed** |
 | Frontend typecheck | ✅ clean |
 | Backend typecheck | ✅ clean |
 | Production build | ✅ exit 0, no `DEV_AUTH_TOKEN` in bundle |
 | Lint (`src/`) | ✅ 0 issues |
 
-**39 new backend cases** in this sprint:
+**44 new backend cases** in this sprint:
 
 - **Validation (13)** — check digit at each valid length, wrong check digit, non-numeric, unsupported length, missing, UPC length rule, upc-like column detection, and an assertion that **no issue is ever blocking**.
 - **Duplicate detection (11)** — the real KI-3 case from `Import 08.07 1.txt` (rows 2 and 5), row ordering, trimming, case sensitivity, blank keys, mapped-header indirection, multiple groups, overwritten-row counting.
+- **Template persistence (5)** — including a regression test that reproduces PostgreSQL JSONB key reordering, so an order-sensitive equality check fails it.
 - **Template matching (15)** — fingerprint stability, order independence, casing independence, add/remove sensitivity, exact match re-pointing to actual header spellings, version preference, source-type isolation, partial pre-application, new/missing header reporting, coverage ranking, and no-match behaviour.
 
 **Live verification on Azure.** Backend redeployed and healthy (`database: connected`); SWA deploy succeeded; the served bundle contains *Existing mapping applied*, *Duplicate SKU detected*, *Review Mapping*, *Products Created*, *Import Another File*, and *Not available yet*; `mapping_template` is queryable in the cloud database.
@@ -145,7 +149,7 @@ Requested behaviour that belongs to later phases, documented rather than built:
 
 ## 5. Screenshots
 
-None captured. Every UI change was verified by asserting on strings in the deployed bundle rather than visually. Operator walkthrough with screenshots is best produced alongside the §8 acceptance run.
+Operator-captured screenshots from the acceptance run confirmed the import summary and the cleaned-up workspace. Remaining UI assertions were made against strings in the deployed bundle rather than visually.
 
 ---
 
@@ -177,18 +181,32 @@ Imports behave exactly as before when no template matches and no identifier is i
 
 ---
 
-## 8. Recommendation on declaring Phase 1.0.1 complete
+## 8. Completion — ✅ **Phase 1.0.1 is COMPLETE** *(2026-08-08)*
 
-**Not yet — pending one short acceptance run.**
+**Original recommendation was to hold pending an acceptance run. That run has now been completed.**
 
 Everything requested is implemented, tested, built and deployed, and the two known defects it targeted (KI-2, KI-3) are resolved. But two headline behaviours have only been proven by unit test, never observed by a person in the live system:
 
 1. **Repeat import** of a previously imported file — should show *"Existing mapping applied."* and skip the mapping screen.
 2. **Import a file containing `ABC123INVALID`** — should succeed, create the product, mark it **Needs Review**, and list the warning in the summary.
 
-Given this sprint exists precisely because silent behaviour caused seven misrouted imports, confirming these two visibly is worth the ten minutes. Two items are also **partially delivered** (§6) and should either be finished or explicitly accepted as-is.
+### Acceptance run results
 
-**Recommendation:** run the two checks above; if both behave as described, declare Phase 1.0.1 complete with §6 accepted as a known gap, and proceed to Phase 1.1.
+| Check | Result |
+|---|---|
+| Repeat import applies the saved mapping and skips the mapping screen | ✅ Confirmed live — 0 created, 5 updated, no mapping prompt |
+| Invalid GTIN imports, creates the product, flags Needs Review, lists the warning | ✅ Confirmed live — 5 warnings, 4 products `needs_review` |
+| Import summary shows created/updated/warnings/errors/skipped, duration, catalog, organization, source file, import ID | ✅ Confirmed live |
+| Prototype artifacts gone from the live workspace | ✅ Confirmed live |
+| Duplicate-SKU warning at preview | ✅ Verified against the real file — all six required elements present after the fix below |
+
+### Defects found by the acceptance run — all fixed
+
+1. **`warningRows` recorded 0** while the summary listed 5 warnings. Validation warnings were not counted, only parse warnings, so Import History understated every import. Fixed in `48b7b8a`.
+2. **Template version churn.** Re-importing an unchanged file created a new version each time (v1 → v2 → …). PostgreSQL JSONB normalizes key order on write, so the order-sensitive `JSON.stringify` equality check never matched and the "unchanged" branch was unreachable. Fixed in `93cf247`, with a regression test whose Prisma stand-in reproduces JSONB key reordering.
+3. **Duplicate warning did not state that nothing was committed.** Five of the six required elements were present; the not-yet-committed guarantee was only *implied* by "Continue import?". Now stated outright: **"Nothing has been imported yet. No products have been created or updated."**
+
+Items in §6 remain **partially delivered and are accepted as known gaps**, tracked as DB-002 and DB-003 in the [Deferred Backlog](../DEFERRED_BACKLOG.md).
 
 ---
 

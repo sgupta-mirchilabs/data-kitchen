@@ -60,7 +60,7 @@ The prototype validated the product concept and pipeline architecture with stake
 
 ### Phase 1.0.1: Catalog Intake Cleanup
 
-**Status:** In Progress
+**Status:** Complete — 2026-08-08. See [PHASE_1_0_1_CLEANUP.md](../releases/PHASE_1_0_1_CLEANUP.md).
 
 **Purpose:** Make Catalog Intake polished and production-ready for internal Mirchi Labs operators before Phase 1.1 (PDF Intake) and Phase 2. No new platform capability — usability, validation and documentation only.
 

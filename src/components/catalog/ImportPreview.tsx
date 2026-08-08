@@ -104,9 +104,16 @@ export function ImportPreview({ headers, sampleRows, totalRows, warnings, filena
               </div>
             </div>
           ))}
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-            {duplicates?.overwrittenRows ?? 0} row
-            {(duplicates?.overwrittenRows ?? 0) === 1 ? "" : "s"} will be superseded. Continue import?
+          <div style={{
+            marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(245,158,11,0.2)",
+            fontSize: 11, color: "var(--text-secondary)",
+          }}>
+            {/* State the not-yet-committed guarantee outright. Inferring it from
+                a "Continue?" prompt asks the operator to trust an implication at
+                exactly the moment they need certainty. */}
+            <strong style={{ color: "var(--text-primary)" }}>Nothing has been imported yet.</strong>{" "}
+            No products have been created or updated. {duplicates?.overwrittenRows ?? 0} row
+            {(duplicates?.overwrittenRows ?? 0) === 1 ? "" : "s"} will be superseded if you continue.
           </div>
         </div>
       )}
