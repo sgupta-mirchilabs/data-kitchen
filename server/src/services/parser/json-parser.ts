@@ -1,5 +1,6 @@
 import type { ParseResult, ParseWarning, ParsedRow, ParseMetadata } from "./parser.types.js";
 import { ParseError } from "../../errors/api-errors.js";
+import { RowLimitExceededError } from "./row-limit.js";
 
 function flattenValue(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -69,7 +70,12 @@ export function parseJson(content: string, maxRows?: number): ParseResult {
   }
   const headers = Array.from(headerSet);
 
-  const limit = maxRows ? Math.min(validItems.length, maxRows) : validItems.length;
+  // Refuse rather than truncate — a silently partial import is
+  // indistinguishable from a complete one once committed.
+  if (maxRows && validItems.length > maxRows) {
+    throw new RowLimitExceededError(validItems.length, maxRows);
+  }
+  const limit = validItems.length;
 
   const rows: ParsedRow[] = [];
   for (let i = 0; i < limit; i++) {

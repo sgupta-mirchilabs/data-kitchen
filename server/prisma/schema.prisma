@@ -122,6 +122,29 @@ model ImportBatch {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
 
+  // --- Job execution state (Phase 1.0.2, Increment A) ---
+  // ImportBatch doubles as the persisted job record. These columns are kept
+  // logically distinct from the import's business metadata above so a later
+  // extraction into a separate ImportJob table stays mechanical.
+  queuedAt          DateTime? @map("queued_at") @db.Timestamptz()
+  startedAt         DateTime? @map("started_at") @db.Timestamptz()
+  completedAt       DateTime? @map("completed_at") @db.Timestamptz()
+  /// Refreshed while a worker holds the lease; staleness implies a dead worker.
+  heartbeatAt       DateTime? @map("heartbeat_at") @db.Timestamptz()
+  /// Worker identity holding the lease.
+  lockedBy          String?   @map("locked_by") @db.VarChar(100)
+  /// Lease expiry. A processing row past this may be reclaimed by any worker.
+  lockExpiresAt     DateTime? @map("lock_expires_at") @db.Timestamptz()
+  attempts          Int       @default(0)
+  maxAttempts       Int       @default(3) @map("max_attempts")
+  /// Rows durably committed. Only ever advanced inside a transaction that also
+  /// commits the work it counts, so it can never claim uncommitted progress.
+  progressRows      Int       @default(0) @map("progress_rows")
+  errorCode         String?   @map("error_code") @db.VarChar(64)
+  errorMessage      String?   @map("error_message") @db.Text
+  /// Set by the operator; honoured at the next chunk boundary.
+  cancelRequestedAt DateTime? @map("cancel_requested_at") @db.Timestamptz()
+
   organization  Organization   @relation(fields: [organizationId], references: [id])
   catalog       Catalog        @relation(fields: [catalogId], references: [id])
   sourceRecords SourceRecord[]

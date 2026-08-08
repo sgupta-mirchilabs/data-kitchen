@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCsv, detectDelimiter } from "../../src/services/parser/csv-parser.js";
+import { RowLimitExceededError } from "../../src/services/parser/row-limit.js";
 
 const fixturesDir = join(import.meta.dirname, "..", "fixtures");
 
@@ -83,12 +84,24 @@ describe("parseCsv", () => {
     expect(() => parseCsv("SKU,Name,Brand\n")).toThrow("no valid data rows");
   });
 
-  it("respects maxRows limit", () => {
-    const csv = "SKU\na\nb\nc\nd\ne";
-    const result = parseCsv(csv, 3);
+  it("refuses a file over maxRows instead of silently truncating", () => {
+    // Previously this truncated to 3 rows and reported success, so an operator
+    // could import a subset believing it was the whole file.
+    const csv = ["SKU", "a", "b", "c", "d", "e"].join("\n");
+    expect(() => parseCsv(csv, 3)).toThrow(RowLimitExceededError);
+    try {
+      parseCsv(csv, 3);
+    } catch (e) {
+      const err = e as RowLimitExceededError;
+      expect(err.code).toBe("IMPORT_ROW_LIMIT_EXCEEDED");
+      expect(err.rowCount).toBe(5);
+      expect(err.maxRows).toBe(3);
+      expect(err.message).toContain("No rows were imported");
+    }
+  });
 
-    expect(result.rows.length).toBe(3);
-    expect(result.metadata.totalRows).toBe(5);
+  it("accepts a file exactly at the limit", () => {
+    expect(parseCsv(["SKU", "a", "b", "c"].join("\n"), 3).rows.length).toBe(3);
   });
 
   it("parses tab-delimited content", () => {

@@ -1,79 +1,92 @@
-import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
-import { CheckCircle2, Loader2 } from "lucide-react";
+import { Loader2, XCircle } from "lucide-react";
 
-type Stage = "uploading" | "parsing" | "persisting" | "complete";
-
-const STAGES: { key: Stage; label: string }[] = [
-  { key: "uploading", label: "Uploading file" },
-  { key: "parsing", label: "Parsing and normalizing" },
-  { key: "persisting", label: "Persisting products" },
-  { key: "complete", label: "Import complete" },
-];
+interface StatusLike {
+  status: string;
+  filename: string;
+  totalRows: number;
+  progressRows: number;
+  elapsedMs: number | null;
+  cancelRequested: boolean;
+  attempts: number;
+}
 
 interface Props {
   isComplete: boolean;
+  status?: StatusLike | null;
+  onCancel?: () => void;
 }
 
-export function ImportProgress({ isComplete }: Props) {
-  const [stage, setStage] = useState<Stage>("uploading");
+function formatElapsed(ms: number | null): string {
+  if (ms == null) return "—";
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
 
-  useEffect(() => {
-    if (isComplete) {
-      setStage("complete");
-      return;
-    }
-
-    const timers = [
-      setTimeout(() => setStage("parsing"), 600),
-      setTimeout(() => setStage("persisting"), 1400),
-    ];
-    return () => timers.forEach(clearTimeout);
-  }, [isComplete]);
+/**
+ * Shown while a queued or processing import runs.
+ *
+ * The reassurance line is the point of the whole phase: processing is owned by
+ * a background worker, so leaving the page cannot affect it.
+ */
+export function ImportProgress({ status, onCancel }: Props) {
+  const total = status?.totalRows ?? 0;
+  const done = status?.progressRows ?? 0;
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const queued = status?.status === "queued";
 
   return (
-    <div style={{
-      padding: "40px 24px", display: "flex", flexDirection: "column",
-      alignItems: "center", gap: 32,
-    }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", maxWidth: 340 }}>
-        {STAGES.map(({ key, label }) => {
-          const stageIndex = STAGES.findIndex((s) => s.key === key);
-          const currentIndex = STAGES.findIndex((s) => s.key === stage);
-          const isDone = stageIndex < currentIndex || stage === "complete";
-          const isCurrent = stageIndex === currentIndex && stage !== "complete";
-
-          return (
-            <motion.div
-              key={key}
-              initial={{ opacity: 0.4 }}
-              animate={{ opacity: isDone || isCurrent ? 1 : 0.4 }}
-              style={{
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "8px 12px", borderRadius: 6,
-                background: isCurrent ? "var(--mirchi-dim)" : isDone ? "var(--green-dim)" : "var(--surface)",
-                border: `1px solid ${isCurrent ? "var(--mirchi-glow)" : isDone ? "rgba(34,197,94,0.15)" : "var(--border-subtle)"}`,
-              }}
-            >
-              {isDone && <CheckCircle2 size={14} color="var(--green)" />}
-              {isCurrent && (
-                <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }}>
-                  <Loader2 size={14} color="var(--mirchi)" />
-                </motion.div>
-              )}
-              {!isDone && !isCurrent && (
-                <div style={{ width: 14, height: 14, borderRadius: "50%", border: "1.5px solid var(--border)", background: "transparent" }} />
-              )}
-              <span style={{
-                fontSize: 12, fontWeight: isCurrent ? 600 : 400,
-                color: isDone ? "var(--green)" : isCurrent ? "var(--mirchi)" : "var(--text-muted)",
-              }}>
-                {label}
-              </span>
-            </motion.div>
-          );
-        })}
+    <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "24px 8px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <Loader2 size={16} color="var(--mirchi)" style={{ animation: "spin 1s linear infinite" }} />
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+          {queued ? "Queued" : "Processing"}{status?.filename ? ` ${status.filename}` : ""}
+        </div>
+        {status?.cancelRequested && (
+          <span style={{ fontSize: 11, color: "var(--amber)" }}>Cancelling at next checkpoint…</span>
+        )}
       </div>
+
+      <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+        {queued
+          ? "Waiting for a worker to pick this up."
+          : `${done.toLocaleString()} / ${total.toLocaleString()} rows processed`}
+      </div>
+
+      <div style={{ height: 6, borderRadius: 3, background: "var(--surface-overlay)", overflow: "hidden" }}>
+        <div style={{
+          width: `${queued ? 0 : pct}%`, height: "100%", background: "var(--mirchi)",
+          transition: "width 0.4s ease",
+        }} />
+      </div>
+
+      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--text-muted)" }}>
+        <span>Elapsed {formatElapsed(status?.elapsedMs ?? null)}</span>
+        {status && status.attempts > 1 && <span>Attempt {status.attempts}</span>}
+      </div>
+
+      <div style={{
+        marginTop: 4, padding: "10px 12px", borderRadius: 8,
+        background: "var(--surface-raised)", border: "1px solid var(--border)",
+        fontSize: 12, color: "var(--text-secondary)",
+      }}>
+        <strong style={{ color: "var(--text-primary)" }}>You can leave this page.</strong>{" "}
+        Processing continues in the background. Return to Import History at any time to see the result.
+      </div>
+
+      {onCancel && !status?.cancelRequested && (
+        <div>
+          <button onClick={onCancel} style={{
+            display: "flex", alignItems: "center", gap: 6, padding: "6px 12px",
+            borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)",
+            color: "var(--text-secondary)", fontSize: 12, cursor: "pointer",
+          }}>
+            <XCircle size={13} /> Cancel import
+          </button>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+            Rows already committed remain in the catalog and are not rolled back.
+          </div>
+        </div>
+      )}
     </div>
   );
 }

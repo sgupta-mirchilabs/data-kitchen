@@ -8,6 +8,7 @@ declare module "fastify" {
     prisma: PrismaClient;
     storage: StorageProvider;
     config: AppConfig;
+    importService: import("./services/import.service.js").ImportService;
   }
 
   interface FastifyRequest {

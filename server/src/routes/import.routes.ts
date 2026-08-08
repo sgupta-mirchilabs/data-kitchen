@@ -4,13 +4,15 @@ import { ImportService } from "../services/import.service.js";
 import { suggestFieldMappings, type FieldMapping } from "../services/normalizer.js";
 import { detectDuplicateSkus, countOverwrittenRows } from "../services/duplicate-detection.js";
 import { projectImportImpact } from "../services/import-projection.js";
+import { transition } from "../jobs/import-job.repository.js";
+import { isTerminal, cancellationKind } from "../jobs/import-state.js";
 import { findTemplateMatch, saveTemplate } from "../services/mapping-template.service.js";
 import { ValidationError, FileTooLargeError } from "../errors/api-errors.js";
 import { requirePermission } from "../auth/permissions.js";
 import { writeAuditLog } from "../services/audit.service.js";
 
 export async function importRoutes(app: FastifyInstance) {
-  const importService = new ImportService(app.prisma, app.storage, app.config);
+  const importService = app.importService;
 
   app.post<{ Params: { catalogId: string } }>(
     "/catalogs/:catalogId/imports",
@@ -189,13 +191,13 @@ export async function importRoutes(app: FastifyInstance) {
         throw new ValidationError("fieldMappings is required and must be an object");
       }
 
-      const results = await importService.confirmImport(ctx, request.params.id, fieldMappings);
+      const accepted = await importService.enqueueImport(ctx, request.params.id, fieldMappings);
 
       // Record the mapping the operator actually confirmed so the next upload of
       // the same shape needs no mapping work. Best-effort: a template failure
       // must never fail an import that already succeeded.
       let savedTemplate: { id: string; version: number; created: boolean } | null = null;
-      if (results.status === "completed") {
+      if (accepted.status === "queued") {
         try {
           const batch = await app.prisma.importBatch.findUnique({
             where: { id: request.params.id },
@@ -217,29 +219,30 @@ export async function importRoutes(app: FastifyInstance) {
         }
       }
 
-      const auditAction = results.status === "completed" ? "import.completed" : "import.failed";
       await writeAuditLog(app.prisma, {
         organizationId: ctx.organizationId,
         userId: ctx.userId,
-        action: "import.confirmed",
+        action: "import.queued",
         resourceType: "import_batch",
         resourceId: request.params.id,
         requestId: request.requestId,
         result: "success",
-        metadata: { totalRows: results.totalRows, successfulRows: results.successfulRows, failedRows: results.failedRows },
-      });
-      await writeAuditLog(app.prisma, {
-        organizationId: ctx.organizationId,
-        userId: ctx.userId,
-        action: auditAction,
-        resourceType: "import_batch",
-        resourceId: request.params.id,
-        requestId: request.requestId,
-        result: results.status === "completed" ? "success" : "failure",
-        metadata: { createdProducts: results.createdProducts, updatedProducts: results.updatedProducts },
+        metadata: { totalRows: accepted.totalRows, catalogId: accepted.catalogId },
       });
 
-      return reply.send({ data: { ...results, savedTemplate } });
+      // 202: the import is durably queued, not finished. From here the operator
+      // may close the browser without affecting the run.
+      return reply.status(202).send({
+        data: {
+          importBatchId: accepted.importBatchId,
+          status: accepted.status,
+          totalRows: accepted.totalRows,
+          catalogId: accepted.catalogId,
+          organizationId: accepted.organizationId,
+          statusUrl: `/api/v1/imports/${accepted.importBatchId}/status`,
+          savedTemplate,
+        },
+      });
     },
   );
 
@@ -294,4 +297,96 @@ export async function importRoutes(app: FastifyInstance) {
       },
     });
   });
+
+  /** Lightweight polling endpoint: job state only, no row payloads. */
+  app.get<{ Params: { id: string } }>("/imports/:id/status", async (request, reply) => {
+    const ctx = request.tenantContext;
+    requirePermission(ctx, "catalog:read");
+
+    const batch = await app.prisma.importBatch.findFirst({
+      where: { id: request.params.id, organizationId: ctx.organizationId },
+      select: {
+        id: true, status: true, filename: true, totalRows: true, progressRows: true,
+        successfulRows: true, warningRows: true, failedRows: true,
+        queuedAt: true, startedAt: true, completedAt: true, heartbeatAt: true,
+        attempts: true, maxAttempts: true, errorCode: true, errorMessage: true,
+        cancelRequestedAt: true, catalogId: true, organizationId: true,
+      },
+    });
+
+    if (!batch) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "Import not found" } });
+    }
+
+    const started = batch.startedAt?.getTime();
+    const ended = batch.completedAt?.getTime() ?? Date.now();
+    return reply.send({
+      data: {
+        ...batch,
+        elapsedMs: started ? ended - started : null,
+        isTerminal: isTerminal(batch.status),
+        cancelRequested: batch.cancelRequestedAt != null,
+      },
+    });
+  });
+
+  /**
+   * Requests cancellation.
+   *
+   * Queued imports stop immediately because nothing has been committed.
+   * A processing import stops at the next chunk boundary; rows already
+   * committed are never rolled back, and the response says so explicitly.
+   */
+  app.post<{ Params: { id: string } }>("/imports/:id/cancel", async (request, reply) => {
+    const ctx = request.tenantContext;
+    requirePermission(ctx, "import:execute");
+
+    const batch = await app.prisma.importBatch.findFirst({
+      where: { id: request.params.id, organizationId: ctx.organizationId },
+      select: { id: true, status: true, progressRows: true },
+    });
+    if (!batch) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "Import not found" } });
+    }
+
+    const kind = cancellationKind(batch.status);
+    if (kind === "not-cancellable") {
+      return reply.status(409).send({
+        error: { code: "NOT_CANCELLABLE", message: `An import that is ${batch.status.replace(/_/g, " ")} cannot be cancelled.` },
+      });
+    }
+
+    await app.prisma.importBatch.update({
+      where: { id: batch.id },
+      data: { cancelRequestedAt: new Date() },
+    });
+
+    if (kind === "immediate") {
+      await transition(app.prisma, batch.id, "cancelled", { releaseLease: true });
+    }
+
+    await writeAuditLog(app.prisma, {
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      action: "import.cancelled",
+      resourceType: "import_batch",
+      resourceId: batch.id,
+      requestId: request.requestId,
+      result: "success",
+      metadata: { kind, committedRowsAtCancel: batch.progressRows },
+    });
+
+    return reply.send({
+      data: {
+        importBatchId: batch.id,
+        cancellation: kind,
+        status: kind === "immediate" ? "cancelled" : batch.status,
+        committedRows: batch.progressRows,
+        message: kind === "immediate"
+          ? "Import cancelled. Nothing was imported."
+          : "Cancelling at the next chunk boundary. Rows already committed remain in the catalog and are not rolled back.",
+      },
+    });
+  });
+
 }

@@ -1,6 +1,7 @@
 import { parse } from "csv-parse/sync";
 import type { ParseResult, ParseWarning, ParsedRow, ParseMetadata } from "./parser.types.js";
 import { ParseError } from "../../errors/api-errors.js";
+import { RowLimitExceededError } from "./row-limit.js";
 
 export function detectDelimiter(content: string): string {
   const firstLine = content.split(/\r?\n/)[0] ?? "";
@@ -63,7 +64,12 @@ export function parseCsv(content: string, maxRows?: number): ParseResult {
   }
 
   const dataRecords = records.slice(1);
-  const limit = maxRows ? Math.min(dataRecords.length, maxRows) : dataRecords.length;
+  // Refuse rather than truncate — a silently partial import is
+  // indistinguishable from a complete one once committed.
+  if (maxRows && dataRecords.length > maxRows) {
+    throw new RowLimitExceededError(dataRecords.length, maxRows);
+  }
+  const limit = dataRecords.length;
 
   const rows: ParsedRow[] = [];
   for (let i = 0; i < limit; i++) {

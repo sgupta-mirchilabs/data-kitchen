@@ -13,6 +13,8 @@ import { PrismaClient } from "@prisma/client";
 import { createStorageProvider } from "./storage/storage.factory.js";
 import { DevAuthProvider } from "./auth/dev-auth-provider.js";
 import { EntraAuthProvider } from "./auth/entra-auth-provider.js";
+import { ImportWorker } from "./jobs/import-worker.js";
+import { ImportService } from "./services/import.service.js";
 import { AutoTenantResolver } from "./auth/auto-tenant-resolver.js";
 import { registerAuthHook } from "./auth/middleware.js";
 import { writeAuditLog } from "./services/audit.service.js";
@@ -32,6 +34,10 @@ const prisma = new PrismaClient({
 
 const storage = createStorageProvider(config.storage);
 
+// One ImportService shared by the HTTP routes and the background worker, so
+// both execute identical import logic.
+const importService = new ImportService(prisma, storage, config);
+
 const app = Fastify({
   logger: {
     level: config.nodeEnv === "production" ? "info" : "debug",
@@ -47,6 +53,7 @@ await app.register(multipart, {
 app.decorate("prisma", prisma);
 app.decorate("storage", storage);
 app.decorate("config", config);
+app.decorate("importService", importService);
 
 let authProvider: AuthProvider;
 let tenantResolver: TenantResolver;
@@ -122,16 +129,31 @@ await app.register(importRoutes, { prefix: "/api/v1" });
 await app.register(productRoutes, { prefix: "/api/v1" });
 await app.register(organizationRoutes, { prefix: "/api/v1" });
 
+// Import worker: polls for durably queued imports so processing survives the
+// request that started it. Started after listen so a failing bind does not
+// leave a worker running against a half-initialized process.
+const importWorker = new ImportWorker(prisma, importService, {
+  pollIntervalMs: config.imports.pollIntervalMs,
+  leaseMs: config.imports.leaseMs,
+  chunkSize: config.imports.chunkSize,
+  log: (entry) => app.log.info(entry, "import"),
+});
+
 try {
   await prisma.$connect();
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`Server listening on ${config.host}:${config.port}`);
+  importWorker.start();
 } catch (err) {
   app.log.error(err);
   process.exit(1);
 }
 
 async function shutdown() {
+  // Stop polling and let any in-flight chunk finish before closing the pool.
+  // A chunk killed mid-transaction rolls back, and the lease expires so another
+  // worker reclaims the job — but a clean stop avoids that round trip entirely.
+  await importWorker.stop();
   await app.close();
   await prisma.$disconnect();
   process.exit(0);

@@ -7,6 +7,9 @@ import type { ParseResult, PreviewResult } from "./parser/parser.types.js";
 import { normalizeRow, computeDataQualityStatus, type FieldMapping } from "./normalizer.js";
 import { findDuplicate } from "./duplicate-resolver.js";
 import { validateGtin, type ValidationIssue } from "./import-validation.js";
+import { advanceProgress, heartbeat, isCancellationRequested } from "../jobs/import-job.repository.js";
+import { transition } from "../jobs/import-job.repository.js";
+import { isTerminal, type ImportState } from "../jobs/import-state.js";
 import { diffProductFields, serializeHistoryValue } from "./history.js";
 import { ParseError, ValidationError } from "../errors/api-errors.js";
 import type { AppConfig } from "../config.js";
@@ -26,7 +29,7 @@ export interface UploadResult {
 
 export interface ImportResults {
   importBatchId: string;
-  status: "completed" | "failed";
+  status: "completed" | "completed_with_warnings" | "failed" | "cancelled";
   totalRows: number;
   successfulRows: number;
   warningRows: number;
@@ -117,33 +120,84 @@ export class ImportService {
     };
   }
 
-  async confirmImport(
+  /**
+   * Durably accepts a confirmed import and returns immediately.
+   *
+   * Everything after this point is the worker's responsibility, so once this
+   * resolves the operator may close the browser without affecting the run.
+   */
+  async enqueueImport(
     ctx: TenantContext,
     importBatchId: string,
     fieldMappings: FieldMapping,
-  ): Promise<ImportResults> {
+  ): Promise<{ importBatchId: string; status: string; totalRows: number; catalogId: string; organizationId: string }> {
     const batch = await this.prisma.importBatch.findFirst({
       where: { id: importBatchId, organizationId: ctx.organizationId },
     });
 
     if (!batch) throw new ValidationError(`Import batch not found: ${importBatchId}`);
-    if (batch.status === "completed") throw new ValidationError("This import has already been completed");
+    if (isTerminal(batch.status)) {
+      throw new ValidationError(`This import is already ${batch.status.replace(/_/g, " ")}.`);
+    }
+    if (batch.status === "queued" || batch.status === "processing") {
+      throw new ValidationError("This import is already in progress.");
+    }
 
     await this.prisma.importBatch.update({
       where: { id: importBatchId },
-      data: { status: "parsing", fieldMappings: fieldMappings as unknown as any },
+      data: { fieldMappings: fieldMappings as unknown as any },
     });
+    await transition(this.prisma, importBatchId, "queued", { progressRows: 0 });
 
-    const scopedStorage = createTenantScopedStorage(this.storage, ctx.organizationId);
+    return {
+      importBatchId,
+      status: "queued",
+      totalRows: batch.totalRows,
+      catalogId: batch.catalogId,
+      organizationId: batch.organizationId,
+    };
+  }
+
+  /**
+   * Executes a leased import. Called only by the worker.
+   *
+   * Organization and catalog are taken from the persisted batch, never from a
+   * caller, so a background run carries the same tenant guarantees as a
+   * request-bound one.
+   *
+   * The per-row commit logic below is deliberately unchanged from the
+   * synchronous pipeline (Increment A does not rewrite it). What is new is the
+   * surrounding chunk loop: heartbeat, cancellation checks, and progress that
+   * advances inside a row transaction so it can never exceed committed work.
+   */
+  async executeImport(
+    importBatchId: string,
+    opts: { workerId: string; leaseMs: number; chunkSize: number; log?: (e: Record<string, unknown>) => void },
+  ): Promise<ImportResults> {
+    const log = opts.log ?? (() => {});
+    const batch = await this.prisma.importBatch.findUnique({ where: { id: importBatchId } });
+    if (!batch) throw new ValidationError(`Import batch not found: ${importBatchId}`);
+
+    const fieldMappings = (batch.fieldMappings ?? {}) as FieldMapping;
+    const ctx = { displayName: batch.uploadedBy ?? "system:import" } as TenantContext;
+    const resumeFrom = batch.progressRows ?? 0;
+
+    const scopedStorage = createTenantScopedStorage(this.storage, batch.organizationId);
+    const blobStart = Date.now();
     const fileBuffer = await scopedStorage.download(batch.fileStorageKey!);
     const content = fileBuffer.toString("utf-8");
+    const blobMs = Date.now() - blobStart;
 
+    const parseStart = Date.now();
     let parseResult: ParseResult;
     if (batch.fileType === "csv") {
       parseResult = parseCsv(content, this.config.upload.maxImportRows);
     } else {
       parseResult = parseJson(content, this.config.upload.maxImportRows);
     }
+    const parseMs = Date.now() - parseStart;
+    log({ event: "import.parsed", importBatchId, rows: parseResult.rows.length, blobMs, parseMs,
+          heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1048576), resumeFrom });
 
     let successfulRows = 0;
     let warningRows = 0;
@@ -159,7 +213,17 @@ export class ImportService {
       warnings.push({ rowNumber: warning.rowNumber, message: warning.message });
     }
 
+    let cancelled = false;
+    let chunkStart = Date.now();
+
     for (const row of parseResult.rows) {
+      // Resume: rows below committed progress were durably applied by a prior
+      // attempt. The (import_batch_id, row_number) unique index remains a
+      // defensive backstop, not the mechanism relied on here.
+      if (row.rowNumber <= resumeFrom) continue;
+
+      const isChunkBoundary = row.rowNumber % opts.chunkSize === 0;
+
       try {
         const { product: normalized, provenance } = normalizeRow(row.data, fieldMappings);
         const qualityStatus = computeDataQualityStatus(normalized);
@@ -355,6 +419,31 @@ export class ImportService {
           warningRows++;
         }
         successfulRows++;
+
+        // Progress is stamped in the same transaction that commits the row
+        // closing the chunk, so it can never claim uncommitted work.
+        if (isChunkBoundary) {
+          await this.prisma.$transaction(async (tx) => {
+            await advanceProgress(tx, importBatchId, row.rowNumber);
+          });
+          const stillOwned = await heartbeat(this.prisma, importBatchId, opts.workerId, opts.leaseMs);
+          log({ event: "import.chunk", importBatchId, throughRow: row.rowNumber,
+                chunkMs: Date.now() - chunkStart,
+                heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1048576) });
+          chunkStart = Date.now();
+
+          // Losing the lease means another worker reclaimed this job; stopping
+          // immediately avoids two workers committing the same import.
+          if (!stillOwned) {
+            log({ event: "import.lease_lost", importBatchId, workerId: opts.workerId });
+            throw new Error("Lease lost; another worker has taken over this import");
+          }
+
+          if (await isCancellationRequested(this.prisma, importBatchId)) {
+            cancelled = true;
+            break;
+          }
+        }
       } catch (err) {
         failedRows++;
         const message = err instanceof Error ? err.message : String(err);
@@ -373,24 +462,36 @@ export class ImportService {
       }
     }
 
-    const finalStatus = failedRows === parseResult.rows.length ? "failed" : "completed";
+    const processedRows = parseResult.rows.length - resumeFrom;
+    const finalStatus: ImportState = cancelled
+      ? "cancelled"
+      : processedRows > 0 && failedRows === processedRows
+        ? "failed"
+        : warnings.length > 0 || warningRows > 0
+          ? "completed_with_warnings"
+          : "completed";
 
-    await this.prisma.importBatch.update({
-      where: { id: importBatchId },
-      data: {
-        status: finalStatus,
-        successfulRows,
-        warningRows,
-        failedRows,
-        errorSummary: (errors.length > 0 || rowValidationIssues.length > 0)
-          ? { errors, warnings, validationIssues: rowValidationIssues } as unknown as any
-          : undefined,
-      },
+    await transition(this.prisma, importBatchId, finalStatus, {
+      successfulRows,
+      warningRows,
+      failedRows,
+      progressRows: parseResult.rows.length,
+      releaseLease: true,
+      ...(finalStatus === "failed"
+        ? { errorCode: "ALL_ROWS_FAILED", errorMessage: `All ${failedRows} rows failed to import.` }
+        : {}),
+      ...((errors.length > 0 || rowValidationIssues.length > 0)
+        ? { errorSummary: { errors, warnings, validationIssues: rowValidationIssues } as unknown as any }
+        : {}),
     });
+
+    log({ event: "import.finished", importBatchId, status: finalStatus,
+          rows: parseResult.rows.length, successfulRows, failedRows,
+          durationMs: Date.now() - startedAt, cancelled });
 
     return {
       importBatchId,
-      status: finalStatus,
+      status: finalStatus as ImportResults["status"],
       totalRows: parseResult.rows.length,
       successfulRows,
       warningRows,

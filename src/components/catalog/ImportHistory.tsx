@@ -1,4 +1,4 @@
-import { CheckCircle2, XCircle, Clock, FileSpreadsheet, Braces } from "lucide-react";
+import { AlertTriangle, Braces, CheckCircle2, Clock, FileSpreadsheet, Loader2, XCircle } from "lucide-react";
 import type { ImportBatch } from "../../lib/catalog-repository";
 
 interface Props {
@@ -8,8 +8,26 @@ interface Props {
 
 function StatusIcon({ status }: { status: string }) {
   if (status === "completed") return <CheckCircle2 size={12} color="var(--green)" />;
+  if (status === "completed_with_warnings") return <AlertTriangle size={12} color="var(--amber)" />;
   if (status === "failed") return <XCircle size={12} color="var(--red)" />;
+  if (status === "cancelled") return <XCircle size={12} color="var(--text-muted)" />;
+  // queued / processing are in-flight, not outcomes.
+  if (status === "processing") return <Loader2 size={12} color="var(--mirchi)" />;
+  if (status === "queued") return <Clock size={12} color="var(--text-muted)" />;
   return <Clock size={12} color="var(--text-muted)" />;
+}
+
+/** Job states read as sentences, not enum values. */
+function statusLabel(status: string): string {
+  switch (status) {
+    case "queued": return "Queued";
+    case "processing": return "Processing";
+    case "completed": return "Completed";
+    case "completed_with_warnings": return "Completed with warnings";
+    case "failed": return "Failed";
+    case "cancelled": return "Cancelled";
+    default: return status.replace(/_/g, " ");
+  }
 }
 
 export function ImportHistory({ imports }: Props) {
@@ -66,7 +84,7 @@ export function ImportHistory({ imports }: Props) {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <StatusIcon status={imp.status} />
-            <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "capitalize" }}>{imp.status}</span>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{statusLabel(imp.status)}</span>
           </div>
         </div>
       ))}

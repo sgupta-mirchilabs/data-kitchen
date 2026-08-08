@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseJson } from "../../src/services/parser/json-parser.js";
+import { RowLimitExceededError } from "../../src/services/parser/row-limit.js";
 
 const fixturesDir = join(import.meta.dirname, "..", "fixtures");
 
@@ -78,11 +79,20 @@ describe("parseJson", () => {
     expect(result.warnings.some((w) => w.type === "structure")).toBe(true);
   });
 
-  it("respects maxRows limit", () => {
+  it("refuses a file over maxRows instead of silently truncating", () => {
     const items = Array.from({ length: 10 }, (_, i) => ({ id: i }));
-    const result = parseJson(JSON.stringify(items), 5);
+    expect(() => parseJson(JSON.stringify(items), 5)).toThrow(RowLimitExceededError);
+    try {
+      parseJson(JSON.stringify(items), 5);
+    } catch (e) {
+      const err = e as RowLimitExceededError;
+      expect(err.rowCount).toBe(10);
+      expect(err.maxRows).toBe(5);
+    }
+  });
 
-    expect(result.rows.length).toBe(5);
-    expect(result.metadata.totalRows).toBe(10);
+  it("accepts a file exactly at the limit", () => {
+    const items = Array.from({ length: 5 }, (_, i) => ({ id: i }));
+    expect(parseJson(JSON.stringify(items), 5).rows.length).toBe(5);
   });
 });

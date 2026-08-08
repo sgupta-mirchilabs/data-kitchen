@@ -105,6 +105,15 @@ export function loadConfig() {
       maxImportRows: optionalInt("MAX_IMPORT_ROWS", 10000),
     },
 
+    imports: {
+      /** How often the worker looks for queued work. */
+      pollIntervalMs: optionalInt("IMPORT_POLL_INTERVAL_MS", 2000),
+      /** Lease validity without a heartbeat; an expired lease is reclaimable. */
+      leaseMs: optionalInt("IMPORT_LEASE_MS", 60000),
+      /** Rows between progress/heartbeat/cancellation checkpoints. */
+      chunkSize: optionalInt("IMPORT_CHUNK_SIZE", 100),
+    },
+
     cors: {
       origins,
     },

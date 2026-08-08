@@ -11,6 +11,24 @@ import { CatalogTypeBadge } from "./CatalogSelector";
 
 type Stage = "upload" | "preview" | "mapping" | "importing" | "results";
 
+interface ImportStatus {
+  id: string;
+  status: string;
+  filename: string;
+  totalRows: number;
+  progressRows: number;
+  successfulRows: number;
+  warningRows: number;
+  failedRows: number;
+  elapsedMs: number | null;
+  isTerminal: boolean;
+  cancelRequested: boolean;
+  attempts: number;
+  maxAttempts: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
 interface ParsedRow {
   rowNumber: number;
   data: Record<string, string>;
@@ -65,6 +83,35 @@ interface ImportResultData {
   durationMs?: number;
   filename?: string;
   savedTemplate?: { id: string; version: number; created: boolean } | null;
+  importBatchId?: string;
+  status?: string;
+}
+
+
+/**
+ * Adapts the polled job status into the shape ImportResults renders.
+ *
+ * The detailed per-row warnings live on the batch's errorSummary and are not
+ * carried by the lightweight status endpoint, so the summary shows counts and
+ * the operator opens Import History for the detail.
+ */
+function statusToResults(status: ImportStatus | null): ImportResultData | null {
+  if (!status) return null;
+  return {
+    importBatchId: status.id,
+    totalRows: status.totalRows,
+    successfulRows: status.successfulRows,
+    warningRows: status.warningRows,
+    failedRows: status.failedRows,
+    createdProducts: 0,
+    updatedProducts: 0,
+    warnings: [],
+    errors: status.errorMessage ? [{ message: status.errorMessage }] : [],
+    skippedRows: Math.max(0, status.totalRows - status.progressRows),
+    durationMs: status.elapsedMs ?? undefined,
+    filename: status.filename,
+    status: status.status,
+  };
 }
 
 interface Props {
@@ -82,6 +129,7 @@ export function ImportWizard({ catalogId, catalogName, catalogType, onClose, onI
   const [uploadData, setUploadData] = useState<UploadResponse | null>(null);
   const [filename, setFilename] = useState("");
   const [results, setResults] = useState<ImportResultData | null>(null);
+  const [status, setStatus] = useState<ImportStatus | null>(null);
 
   async function handleFileSelected(file: File) {
     setError(null);
@@ -99,21 +147,58 @@ export function ImportWizard({ catalogId, catalogName, catalogType, onClose, onI
     }
   }
 
+  /**
+   * Confirms the import. The API returns 202 once the job is durably queued —
+   * not when it finishes — so from here the operator may leave the page.
+   */
   async function handleConfirm(mappings: Record<string, string>) {
     if (!uploadData) return;
     setStage("importing");
     setError(null);
 
     try {
-      const res = await api.post<ImportResultData>(
-        `/imports/${uploadData.importBatchId}/confirm`,
-        { fieldMappings: mappings },
-      );
-      setResults(res.data);
-      setStage("results");
+      await api.post(`/imports/${uploadData.importBatchId}/confirm`, { fieldMappings: mappings });
+      pollStatus(uploadData.importBatchId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
       setStage("mapping");
+    }
+  }
+
+  /**
+   * Polls while the tab is visible. Closing the tab or navigating away only
+   * stops the polling — the worker keeps processing regardless.
+   */
+  function pollStatus(batchId: string) {
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const res = await api.get<ImportStatus>(`/imports/${batchId}/status`);
+        setStatus(res.data);
+        if (res.data.isTerminal) {
+          stopped = true;
+          setStage("results");
+          onImportComplete();
+          return;
+        }
+      } catch {
+        // A transient poll failure must not abort the import; try again.
+      }
+      if (!stopped) {
+        window.setTimeout(tick, document.hidden ? 10000 : 2500);
+      }
+    };
+    void tick();
+    return () => { stopped = true; };
+  }
+
+  async function handleCancel() {
+    if (!uploadData) return;
+    try {
+      await api.post(`/imports/${uploadData.importBatchId}/cancel`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel");
     }
   }
 
@@ -239,14 +324,18 @@ export function ImportWizard({ catalogId, catalogName, catalogType, onClose, onI
 
           {stage === "importing" && (
             <motion.div key="importing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <ImportProgress isComplete={false} />
+              <ImportProgress
+                isComplete={false}
+                status={status}
+                onCancel={handleCancel}
+              />
             </motion.div>
           )}
 
           {stage === "results" && results && (
             <motion.div key="results" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <ImportResults
-                results={results}
+                results={results ?? statusToResults(status)}
                 filename={filename}
                 catalogName={catalogName}
                 onViewCatalog={handleViewCatalog}
