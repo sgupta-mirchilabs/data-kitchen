@@ -80,7 +80,12 @@ function emptyToNull(value: string | undefined): string | null {
   return value.trim();
 }
 
-function normalizeGtin(raw: string): { value: string; method: string } {
+/**
+ * Exported because matching must compare like with like. A GTIN is stored
+ * padded to 14 digits, so anything resolving a row against the catalog has to
+ * apply the same normalization before it looks — see `import-matching.ts`.
+ */
+export function normalizeGtin(raw: string): { value: string; method: string } {
   const digits = raw.replace(/\D/g, "");
   if (digits.length <= 14 && digits.length >= 8) {
     const padded = digits.padStart(14, "0");

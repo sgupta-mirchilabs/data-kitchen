@@ -5,7 +5,7 @@ import { parseCsv } from "./parser/csv-parser.js";
 import { parseJson } from "./parser/json-parser.js";
 import type { ParseResult, PreviewResult } from "./parser/parser.types.js";
 import { normalizeRow, computeDataQualityStatus, type FieldMapping } from "./normalizer.js";
-import { findDuplicate } from "./duplicate-resolver.js";
+import { resolveImportMatches } from "./import-matching.js";
 import { validateGtin, type ValidationIssue } from "./import-validation.js";
 import { advanceProgress, heartbeat, isCancellationRequested } from "../jobs/import-job.repository.js";
 import { transition } from "../jobs/import-job.repository.js";
@@ -257,19 +257,22 @@ export class ImportService {
         // Without this the batch records 0 while the summary lists several.
         if (!hasParseWarning && validationIssues.length > 0) warningRows++;
 
-        const duplicate = await findDuplicate(
+        // One shared matcher for preview and commit. Still one call per row at
+        // this point — Increment B batches it per chunk next; what changes here
+        // is only that the rule lives in one place.
+        const [resolvedRow] = await resolveImportMatches(
           this.prisma,
-          batch.catalogId,
-          normalized.sku,
-          normalized.gtin,
+          { catalogId: batch.catalogId, organizationId: batch.organizationId },
+          [{ rowNumber: row.rowNumber, sku: normalized.sku, gtin: normalized.gtin }],
         );
+        const duplicate = resolvedRow.target.kind === "existing" ? resolvedRow.target : null;
 
         let productId: string;
         let isUpdate = false;
 
         if (duplicate) {
           isUpdate = true;
-          productId = duplicate.existingProductId;
+          productId = duplicate.productId;
 
           const existing = await this.prisma.canonicalProduct.findUnique({
             where: { id: productId },

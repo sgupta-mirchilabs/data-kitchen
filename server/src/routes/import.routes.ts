@@ -78,6 +78,7 @@ export async function importRoutes(app: FastifyInstance) {
       // and was previously silent until the results screen.
       const projection = await projectImportImpact(
         app.prisma, catalogId, result.allRows, suggestedMappings.sku, suggestedMappings.gtin,
+        ctx.organizationId,
       );
 
       await writeAuditLog(app.prisma, {

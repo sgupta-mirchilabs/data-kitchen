@@ -1,4 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
+import {
+  matchRowFromRaw,
+  resolveImportMatches,
+  targetKey,
+  type ResolvedRow,
+} from "./import-matching.js";
 
 /**
  * Projects an import's effect on the target catalog, before anything is written.
@@ -10,9 +16,10 @@ import type { PrismaClient } from "@prisma/client";
  * than seconds, and there is currently no product edit or delete in the UI to
  * undo it.
  *
- * Matching mirrors `findDuplicate` exactly — SKU first, then GTIN, scoped to a
- * single catalog — so the projection agrees with what the import will actually
- * do. It is a read-only preview and changes no import behaviour.
+ * Matching is no longer "mirrored" from the commit pipeline — since Increment B
+ * both run `resolveImportMatches`, so the projection cannot drift from what the
+ * import will actually do. This file is now only aggregation: turning per-row
+ * classifications into the counts the confirm screen shows.
  */
 
 export interface ProjectionRowLike {
@@ -38,13 +45,6 @@ export interface ImportProjection {
   existingMatches: ExistingMatch[];
 }
 
-function value(row: ProjectionRowLike, header: string | undefined): string | null {
-  if (!header) return null;
-  const raw = row.data?.[header];
-  const v = typeof raw === "string" ? raw.trim() : "";
-  return v.length > 0 ? v : null;
-}
-
 /**
  * One batched query, not one per row — a 10,000-row file must not become 10,000
  * round trips.
@@ -55,65 +55,48 @@ export async function projectImportImpact(
   rows: ProjectionRowLike[],
   skuHeader: string | undefined,
   gtinHeader: string | undefined,
+  organizationId?: string,
 ): Promise<ImportProjection> {
   const empty: ImportProjection = {
     totalRows: rows.length, distinctProducts: 0, willCreate: 0, willUpdate: 0, existingMatches: [],
   };
   if (!skuHeader && !gtinHeader) return empty;
 
-  // Collapse the file to the distinct products it describes. Identity follows
-  // the resolver: SKU when present, otherwise GTIN.
-  const distinct = new Map<string, { sku: string | null; gtin: string | null }>();
-  for (const row of rows) {
-    const sku = value(row, skuHeader);
-    const gtin = value(row, gtinHeader);
-    const identity = sku ?? gtin;
-    if (!identity) continue;
-    if (!distinct.has(identity)) distinct.set(identity, { sku, gtin });
-  }
-  if (distinct.size === 0) return empty;
+  const matchRows = rows.map((row) => matchRowFromRaw(row, skuHeader, gtinHeader));
+  // A row with neither identifier is not a product this projection can speak
+  // about; it is excluded from the counts, as it always has been.
+  const identified = matchRows.filter((r) => r.sku !== null || r.gtin !== null);
+  if (identified.length === 0) return empty;
 
-  const skus = [...new Set([...distinct.values()].map((d) => d.sku).filter((s): s is string => !!s))];
-  const gtins = [...new Set([...distinct.values()].map((d) => d.gtin).filter((g): g is string => !!g))];
+  const resolved = await resolveImportMatches(prisma, { catalogId, organizationId }, identified);
 
-  const or: Array<Record<string, unknown>> = [];
-  if (skus.length) or.push({ sku: { in: skus } });
-  if (gtins.length) or.push({ gtin: { in: gtins } });
-  if (or.length === 0) return { ...empty, distinctProducts: distinct.size, willCreate: distinct.size };
-
-  const existing = await prisma.canonicalProduct.findMany({
-    where: { catalogId, OR: or },
-    select: { id: true, sku: true, gtin: true, productName: true },
-  });
-
-  const bySku = new Map<string, (typeof existing)[number]>();
-  const byGtin = new Map<string, (typeof existing)[number]>();
-  for (const p of existing) {
-    if (p.sku && !bySku.has(p.sku)) bySku.set(p.sku, p);
-    if (p.gtin && !byGtin.has(p.gtin)) byGtin.set(p.gtin, p);
-  }
-
+  const seen = new Set<string>();
   const matches: ExistingMatch[] = [];
   let willUpdate = 0;
+  let willCreate = 0;
 
-  for (const [identity, { sku, gtin }] of distinct) {
-    // SKU takes precedence, matching findDuplicate's order.
-    const hit = (sku && bySku.get(sku)) || (gtin && byGtin.get(gtin)) || null;
-    if (hit) {
+  for (const row of resolved as ResolvedRow[]) {
+    const key = targetKey(row.target);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    if (row.target.kind === "existing") {
       willUpdate++;
       matches.push({
-        key: identity,
-        matchedOn: sku && bySku.get(sku) ? "sku" : "gtin",
-        productId: hit.id,
-        productName: hit.productName,
+        key: row.matchedValue!,
+        matchedOn: row.matchedOn!,
+        productId: row.target.productId,
+        productName: row.target.productName,
       });
+    } else {
+      willCreate++;
     }
   }
 
   return {
     totalRows: rows.length,
-    distinctProducts: distinct.size,
-    willCreate: distinct.size - willUpdate,
+    distinctProducts: seen.size,
+    willCreate,
     willUpdate,
     existingMatches: matches,
   };
