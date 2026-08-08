@@ -431,3 +431,67 @@ Delivered and deployed. The commit pipeline's per-row logic is unchanged; only t
 ### Not yet proven
 
 Everything above is verified by test or by the live probe. What has **not** been observed is a real operator import running end to end through the queue — that is the acceptance run.
+
+
+---
+
+## 10. Increment B — measured pre-optimization baseline
+
+Captured 2026-08-08 by `server/test/bench/import-bench.ts` against the deployed
+Azure PostgreSQL instance, driving the **real** commit pipeline and counting
+every statement Prisma issues. Runs against a dedicated `[BENCH]` organization
+and catalog, created and torn down by the harness, so operator data is never
+touched.
+
+### Measured
+
+| rows | total ms | rows/sec | statements | stmt/row | transactions | peak heap MB | peak RSS MB |
+|---|---|---|---|---|---|---|---|
+| 100 | 29,750 | 3.4 | 1,213 | 12.1 | 102 | 37 | 127 |
+| 500 | 146,279 | 3.4 | 6,020 | 12.0 | 502 | 53 | 169 |
+
+### Statements by table (500-row run)
+
+| table | statements | per row | why |
+|---|---|---|---|
+| `field_provenance` | 3,000 | 6.0 | one INSERT per mapped field, in a loop |
+| `canonical_product` | 1,000 | 2.0 | `findDuplicate` SELECT + the create/update |
+| `import_batch` | 507 | ~1.0 | the per-row resume-pointer advance (Increment A) |
+| `source_record` | 500 | 1.0 | one INSERT per row |
+| other | 9 | — | batch setup and teardown |
+
+### What this establishes
+
+- **12 statements per row, flat across sizes** — the audit predicted 12–19, and
+  the measurement lands at the bottom of that range because these fixtures have
+  no history rows (all creates, no updates).
+- **Throughput is 3.4 rows/sec at both 100 and 500 rows.** Perfectly linear:
+  5× the rows costs 4.9× the time. This is the N+1 signature, and it means size
+  alone will never improve the rate.
+- **Roughly one transaction per row** (102 and 502), as designed in Phase 1.
+- **Memory is not currently a constraint** — 53 MB heap / 169 MB RSS at 500
+  rows, comfortably inside the 1.75 GB B1 instance. This supports keeping
+  streaming deferred (DB-014) until measurement says otherwise.
+
+### Extrapolations — **not measurements**
+
+At the measured 3.4 rows/sec, and labelled explicitly as arithmetic rather than
+observed results:
+
+| rows | extrapolated duration |
+|---|---|
+| 1,000 | ~4.9 minutes |
+| 2,500 | ~12 minutes |
+| 10,000 | **~49 minutes** |
+
+The 1,000 and 2,500 runs were not executed: at this throughput they cost ~5 and
+~12 minutes of wall clock each, and the 100→500 pair already demonstrates
+linearity conclusively. They should be run as part of the post-B comparison,
+where the whole point is that they will no longer be linear.
+
+### Separate datapoint — 250-row crash/resume
+
+The Increment A durability test (`import-resume.test.ts`) commits 321
+row-transactions in **42 seconds**, ≈130 ms per row-transaction against the same
+remote instance. Recorded separately because it exercises the transaction shape
+rather than the full pipeline.
