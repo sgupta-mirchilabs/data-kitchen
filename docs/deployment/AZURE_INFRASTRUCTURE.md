@@ -1068,7 +1068,7 @@ Every row must pass **both** as a unit test (Phase 2.3, against locally minted t
 | 11 | **Ambiguous org requires explicit selection** | User with two active memberships, no `X-Organization-Id` | `400` `ORGANIZATION_REQUIRED`, listing only that user's organizations |
 | 12 | **Valid org selection honoured** | Same user, `X-Organization-Id` naming one of their active memberships | `200`; all data scoped to the selected organization |
 
-**Note on status codes:** cases 1–5 are authentication failures and return `401`. Cases 7–10 are authorization failures — the token is genuine, but the principal is not permitted — and return `403` from `AutoTenantResolver`. Case 11 returns `400` because the request is well-formed but under-specified. This distinction is intentional and already implemented in [auto-tenant-resolver.ts](server/src/auth/auto-tenant-resolver.ts).
+**Note on status codes:** cases 1–5 are authentication failures and return `401`. Cases 7–10 are authorization failures — the token is genuine, but the principal is not permitted — and return `403` from `AutoTenantResolver`. Case 11 returns `400` because the request is well-formed but under-specified. This distinction is intentional and already implemented in [auto-tenant-resolver.ts](../../server/src/auth/auto-tenant-resolver.ts).
 
 **Do not log tokens while testing.** Compare status codes and error codes only. Do not paste real access tokens into the repository, issue trackers, or CI logs.
 

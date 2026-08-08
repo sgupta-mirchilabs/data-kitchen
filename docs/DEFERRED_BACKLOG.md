@@ -34,12 +34,13 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 | DB-008 | Clear-on-blank import semantics | TBD | P3 | Backlog |
 | DB-009 | Backend CI/CD deployment via GitHub Actions | 1.0.2 | P2 | Backlog |
 | DB-010 | Entra admin consent | TBD | P3 | Backlog |
-| DB-011 | Asynchronous / large-file imports | TBD | P2 | Backlog |
+| DB-011 | Asynchronous / large-file imports | 1.0.2 | P2 | **Done** |
 | DB-012 | Product edit and delete in the UI | TBD | P2 | Backlog |
 | DB-013 | Import staging layer (ImportStagingRecord) | TBD | P3 | Backlog |
 | DB-014 | Streaming parse from Blob Storage | TBD | P2 | Backlog |
 | DB-015 | External queue (Service Bus) for imports | TBD | P3 | Backlog |
 | DB-016 | Multi-instance import workers | TBD | P3 | Backlog |
+| DB-017 | Set-based canonical UPDATE writes | TBD | P2 | Backlog |
 
 ---
 
@@ -193,11 +194,11 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 
 **Reason deferred.** Synchronous import is adequate at internal scale and keeps the pipeline simple while the canonical model is still settling.
 
-**Current phase:** 1 · **Target phase:** TBD · **Priority:** P2
+**Current phase:** 1 · **Target phase:** 1.0.2 · **Priority:** P2
 
 **Dependencies.** Would interact with the single-instance constraint — scale-out is currently unsafe while startup migrations are in use.
 
-**Status:** Backlog
+**Status:** **Done — delivered in Phase 1.0.2** (2026-08-08). Imports run as PostgreSQL-backed jobs with leasing, heartbeat, restart recovery and chunk-granular commit; confirm returns `202` and the operator may close the browser. The 50 MB / 10,000-row limits are unchanged and remain configurable — this item was about the *request thread*, not the limits. Raising the limits is DB-014's trigger. See [PHASE_1_0_2_COMPLETION.md](./releases/PHASE_1_0_2_COMPLETION.md).
 
 ---
 
@@ -291,3 +292,43 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 **Status:** Backlog
 
 **Post-Increment-B note (2026-08-08).** One item to re-measure if this is ever enabled: chunk transactions now hold write locks for roughly 290 ms each (100 rows at 10,000-row scale), where Increment A held them for a few milliseconds per row. That is immaterial with a single writer and is worth checking with several. The lease protocol itself is unchanged and remains correct for multiple workers — a durability test aborts an attempt by lease loss and resumes it on a second worker.
+
+---
+
+## DB-017 — Set-based canonical UPDATE writes
+
+**Description.** Replace the per-product `UPDATE canonical_product` statement with a set-based write for a whole chunk — `UPDATE ... FROM (VALUES ...)` or a join against a temporary table — while preserving the merge rule that only non-empty incoming values overwrite existing ones.
+
+**Reason deferred.** ADR-027 left canonical UPDATEs at one statement per changed product deliberately. The update shape is per-row: which columns appear depends on which fields that row carried, so a set-based write must either build a per-column `COALESCE(NULLIF(...))` expression for all eight typed fields plus the JSONB merge, or overwrite columns the row never mentioned. The second is a silent data-loss bug; the first is a real but non-trivial piece of SQL that needs its own test surface. Increment B's objective was removing the per-row *round trip* for matching and for provenance/source/history, which it did. This is the residue, and it was left as a measured known rather than an unmeasured suspicion.
+
+**Current phase:** 1.0.2 (measured, deferred) · **Target phase:** TBD · **Priority:** P2
+
+**Measured 2026-08-08** against `datakitchen-db-dev` (Standard_B1ms, remote from the benchmark host), synthetic fixtures, `IMPORT_CHUNK_SIZE=100`:
+
+| workload | rows | duration | rows/sec | statements/row | canonical UPDATEs | vs all-create |
+|---|---|---|---|---|---|---|
+| all-create | 1,000 | 3,992 ms | 250.5 | 0.09 | 0 | — |
+| all-update | 1,000 | 28,461 ms | 35.1 | 1.11 | 1,000 | **7.1× slower** |
+| all-create | 5,000 | 17,473 ms | 286.2 | 0.08 | 0 | — |
+| all-update | 5,000 | 144,306 ms | 34.6 | 1.09 | 5,000 | **8.3× slower** |
+| all-create | 10,000 | 32,742 ms | 305.4 | 0.08 | 0 | — |
+| mixed 10/30/60 | 10,000 | 115,356 ms | 86.7 | 0.40 | 3,000 | **3.5× slower** |
+
+The canonical write phase is 88% of commit time in the all-update runs (23.9 s of 27.3 s at 1,000 rows; 122.0 s of 140.3 s at 5,000). Cost per UPDATE is **≈24 ms** and does not vary with file size — that is a network round trip to a remote instance, not query cost. Update throughput is flat at ~35 rows/sec across 1,000 and 5,000 rows, which is the same linearity signature the pre-Increment-B pipeline had, now confined to this one statement class.
+
+**What is already mitigating it.** ADR-028's unchanged-row skip is doing substantial work: in the mixed run, 9,000 rows matched an existing product but only 3,000 issued an UPDATE. Without it that run would have issued 9,000 UPDATEs and cost roughly 145 s more.
+
+**Triggers.** Any one of:
+- A real operator import in which **changed products exceed 5,000** — the point at which the measured all-update path passes 2.5 minutes.
+- The `timings.canonicalMs` recorded on any batch exceeds **120,000 ms**, which is now visible per run in `import_batch.parse_metadata`.
+- Sustained update-heavy workloads where imports are reported as slow, i.e. `updatedProducts - unchangedProducts` routinely above ~2,000 per import.
+- `MAX_IMPORT_ROWS` raised above 10,000 *and* the expected workload is re-imports rather than first imports.
+
+**Cheaper things to try first, in order.** Recorded so the expensive option is not reached for prematurely:
+1. **Co-locate the app and the database.** At ≈24 ms per round trip, most of this is latency rather than work. The benchmark host is remote from the instance; App Service and PostgreSQL are in the same region, so production numbers should already be better than these. Measuring the same workload from the App Service would size the real problem before any code changes.
+2. **Raise `IMPORT_CHUNK_SIZE`.** It does not reduce the UPDATE count, but it amortises the match and read queries further. Small effect here — the UPDATEs dominate.
+3. **Then** the set-based write.
+
+**Dependencies.** None. It is contained entirely within `commitChunk`; `buildChunkPlan` already produces one accumulated update payload per changed product, which is the right input shape for a set-based write.
+
+**Not a correctness issue.** The measurement pass found no defect. Every count reconciled at every size: one source record per row, six provenance rows per row, four history rows per changed product, and the 10/30/60 mixed split produced exactly 1,000 creates, 3,000 updates and 6,000 unchanged.

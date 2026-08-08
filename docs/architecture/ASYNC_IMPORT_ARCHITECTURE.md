@@ -710,3 +710,104 @@ each deferral.
 | **DB-014** streaming parse | `MAX_IMPORT_ROWS` raised materially above 10,000, or measured heap approaching the instance limit. Parsing is currently 0.1% of a 10,000-row run |
 | **DB-015** external queue (Service Bus) | More than one worker instance, cross-process fan-out, or a need for delivery guarantees the database queue cannot express |
 | **DB-016** multi-instance workers | Scale-out of App Service, which is separately blocked while startup migrations are in use. The lease protocol is already correct for it |
+
+---
+
+## 12. Post-acceptance characterization — the UPDATE path
+
+Section 11 measured creates. Every fixture there produced a new product, which
+means it exercised the bulk-insert path and never the one statement class
+ADR-027 knowingly left scaling with rows. This section closes that gap. It is a
+measurement pass only — no pipeline change was made, and none was warranted.
+
+Measured 2026-08-08, same harness, same instance, `IMPORT_CHUNK_SIZE=100`,
+synthetic fixtures, run from a host remote from the database. Non-create
+workloads seed their catalog with a preparatory import first; the seed is not
+measured.
+
+### 12.1 Workloads
+
+| workload | composition |
+|---|---|
+| create | every row is a new product |
+| update | every row matches an existing product and changes four fields |
+| mixed | 10% creates, 30% updates, 60% unchanged, interleaved one-in-ten so no chunk sees only one kind |
+
+### 12.2 Results
+
+| rows | workload | duration | rows/sec | statements | /row | txns | canonical UPDATEs | heap MB | RSS MB |
+|---|---|---|---|---|---|---|---|---|---|
+| 1,000 | create | 3,992 ms | 250.5 | 93 | 0.09 | 12 | 0 | 39 | 126 |
+| 1,000 | **update** | 28,461 ms | **35.1** | 1,105 | 1.11 | 12 | 1,000 | 55 | 145 |
+| 5,000 | create | 17,473 ms | 286.2 | 416 | 0.08 | 52 | 0 | 62 | 165 |
+| 5,000 | **update** | 144,306 ms | **34.6** | 5,473 | 1.09 | 52 | 5,000 | 65 | 214 |
+| 10,000 | create | 32,742 ms | 305.4 | 813 | 0.08 | 102 | 0 | 89 | 264 |
+| 10,000 | **mixed** | 115,356 ms | **86.7** | 4,019 | 0.40 | 102 | 3,000 | 106 | 337 |
+
+Update is **7.1x** slower than create at 1,000 rows and **8.3x** at 5,000. The
+mixed workload is **3.5x** slower than an all-create file of the same size.
+
+### 12.3 Rows written, and the reconciliation
+
+| rows | workload | source records | provenance | history | created | updated | unchanged |
+|---|---|---|---|---|---|---|---|
+| 1,000 | update | 1,000 | 6,000 | 4,000 | 0 | 1,000 | 0 |
+| 5,000 | update | 5,000 | 30,000 | 20,000 | 0 | 5,000 | 0 |
+| 10,000 | mixed | 10,000 | 60,000 | 12,000 | 1,000 | 9,000 | 6,000 |
+
+Every figure is the expected one: one source record per row, six provenance rows
+per row (six mapped fields), four history rows per *changed* product, and the
+mixed split lands exactly on 1,000 / 3,000 / 6,000. `updated` counts every
+matched row, `unchanged` the subset that needed no write — so mixed reports
+9,000 updated of which 6,000 were free.
+
+**No correctness defect was found.**
+
+### 12.4 Where the time goes
+
+| rows | workload | match | read | canonical | source | provenance | history | progress | commit total |
+|---|---|---|---|---|---|---|---|---|---|
+| 1,000 | update | 293 | 307 | **23,910** | 509 | 1,332 | 777 | 244 | 27,253 |
+| 5,000 | update | 1,576 | 1,430 | **121,960** | 2,824 | 7,440 | 4,361 | 1,238 | 140,299 |
+| 10,000 | mixed | 3,335 | 2,847 | **76,937** | 5,319 | 13,560 | 4,126 | 2,507 | 107,617 |
+
+Canonical writes are 88% of commit time in both all-update runs and 71% in the
+mixed run. Cost per UPDATE statement is 23.9 ms, 24.4 ms and 25.6 ms across the
+three — flat, and independent of file size. **That is a network round trip, not
+query cost.** For comparison, one bulk insert of 100 products costs ~57 ms in the
+create runs, so a chunk of 100 creates costs less than three individual updates.
+
+Throughput of 35.1 and 34.6 rows/sec at 1,000 and 5,000 rows is the same
+flat-line signature the whole pipeline had before Increment B — now confined to
+this one statement class.
+
+### 12.5 What is already mitigating it
+
+ADR-028's unchanged-row skip is doing substantial work. The mixed run matched
+9,000 rows and issued 3,000 UPDATEs; without the skip it would have issued 9,000
+and, at ~25 ms each, cost roughly 145 seconds more — more than doubling the run.
+Re-importing an unchanged export, the single most common repeat operation, costs
+nothing at all on the canonical table.
+
+### 12.6 Disposition
+
+Recorded as **DB-017** — set-based canonical UPDATE writes — with measurable
+triggers, not optimized here. Three reasons:
+
+1. **It is a deliberate correctness choice, not an oversight.** The update shape
+   is per-row; a set-based write must either build per-column merge expressions
+   for eight typed fields plus the JSONB merge, or overwrite columns the row
+   never mentioned. The second is silent data loss.
+2. **Most of the cost may not be in the code.** At ~24 ms per round trip against
+   a remote instance, this is latency. App Service and PostgreSQL share a region,
+   so the deployed environment should already be faster than these figures.
+   Re-measuring from inside the App Service should come before any rewrite.
+3. **Nothing observed exceeds tolerance.** The largest measured case — 5,000
+   changed products — takes 2.4 minutes, in a background job the operator is not
+   waiting on.
+
+Triggers, thresholds and the order in which cheaper options should be tried are
+recorded in [DEFERRED_BACKLOG.md](../DEFERRED_BACKLOG.md#db-017--set-based-canonical-update-writes).
+The most useful of them is now self-reporting: `timings.canonicalMs` is
+persisted on every batch, so an import that crosses the threshold says so
+without anyone re-running a benchmark.

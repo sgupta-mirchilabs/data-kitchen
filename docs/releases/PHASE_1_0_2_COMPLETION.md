@@ -3,8 +3,10 @@
 > **Status:** Complete
 > **Increment A (durability):** delivered and deployed 2026-08-08 — commits `df12cd6`, `a541091`, `bebd95a`, `488fe2b`
 > **Increment B (throughput):** delivered and measured 2026-08-08 — commits `1fa4042`, `5b6c3cd`, `4232ab4`
+> **Accepted:** 2026-08-08, followed by a post-acceptance characterization of the UPDATE path (§14)
+> **Tag:** `v1.0.2`
 > **Environment:** Internal Mirchi Labs development (`datakitchen-db-dev`, PostgreSQL 16 Flexible Server, Standard_B1ms)
-> **Detail:** [ASYNC_IMPORT_ARCHITECTURE.md](../architecture/ASYNC_IMPORT_ARCHITECTURE.md)
+> **Detail:** [ASYNC_IMPORT_ARCHITECTURE.md](../architecture/ASYNC_IMPORT_ARCHITECTURE.md) · **Current state:** [PROJECT_STATE.md](../../PROJECT_STATE.md)
 
 ---
 
@@ -187,7 +189,7 @@ Unchanged, with the trigger for each restated in [DEFERRED_BACKLOG.md](../DEFERR
 
 **Phase 1.0.2 is complete.** Both objectives are met and demonstrated end to end against the development environment: an import is durable across restarts and resumes from committed work, and 10,000 rows complete in 33 seconds where the pre-work arithmetic said 49 minutes. The regression surface is held by 317 automated tests, and the one intentional behaviour change is documented where an operator will meet it.
 
-One item is worth carrying forward as known, rather than as a blocker: **the all-update path has not been benchmarked at scale.** It is correct and tested, but its throughput is unmeasured, and it is the workload most likely to surprise — every benchmark above is an all-create fixture. Worth a measurement pass before any customer-facing volume commitment.
+One item is carried forward as known, rather than as a blocker: **update-heavy imports run about 8× slower than creates.** This was measured after acceptance (§14) rather than left as a suspicion, found no correctness defect, and is tracked as DB-017 with triggers.
 
 Phase 1.1 (PDF Intake) is the next phase and is unblocked. DB-013 should be re-evaluated as part of its design rather than treated as settled.
 
@@ -204,3 +206,30 @@ Verified after restart: health `200` with `database: connected`, unauthenticated
 The GitHub workflow's deploy job still cannot run — DB-009, `AZURE_CREDENTIALS` deliberately absent — so its test job passes and its deploy step fails, as before. The backend continues to ship by hand.
 
 **Not deployed:** the frontend, which has no changes in this phase.
+
+---
+
+## 14. Post-acceptance characterization — the UPDATE path
+
+Requested after acceptance, and run as a measurement pass only: no pipeline change was made, and none was warranted. Full detail in [ASYNC_IMPORT_ARCHITECTURE.md §12](../architecture/ASYNC_IMPORT_ARCHITECTURE.md).
+
+Every benchmark in §4 is an all-create fixture, so none of them exercised the one statement class ADR-027 knowingly left scaling with rows.
+
+| rows | workload | duration | rows/sec | statements/row | canonical UPDATEs |
+|---|---|---|---|---|---|
+| 1,000 | create | 3,992 ms | 250.5 | 0.09 | 0 |
+| 1,000 | **update** | 28,461 ms | **35.1** | 1.11 | 1,000 |
+| 5,000 | create | 17,473 ms | 286.2 | 0.08 | 0 |
+| 5,000 | **update** | 144,306 ms | **34.6** | 1.09 | 5,000 |
+| 10,000 | create | 32,742 ms | 305.4 | 0.08 | 0 |
+| 10,000 | **mixed 10/30/60** | 115,356 ms | **86.7** | 0.40 | 3,000 |
+
+**Update is 7.1× slower at 1,000 rows and 8.3× at 5,000; the mixed workload is 3.5× slower than an all-create file of the same size.** Canonical writes are 88% of commit time in the all-update runs, at a flat ≈24 ms per UPDATE regardless of file size — a network round trip, not query cost. Update throughput is flat at ~35 rows/sec, the same linearity signature the whole pipeline had before Increment B, now confined to this one statement class.
+
+**No correctness defect.** Every count reconciled at every size: one source record per row, six provenance rows per row, four history rows per changed product, and the mixed split landed exactly on 1,000 creates / 3,000 updates / 6,000 unchanged.
+
+**ADR-028 is earning its keep.** The mixed run matched 9,000 rows but issued only 3,000 UPDATEs; without the unchanged-row skip it would have issued 9,000 and cost roughly 145 s more.
+
+Recorded as **DB-017** with measurable triggers — >5,000 changed products in a real import, or `timings.canonicalMs` above 120,000 ms, which every batch now self-reports. Cheaper options are listed ahead of the rewrite, the first being to re-measure from inside the App Service: these runs were made from a host remote from the database, and App Service and PostgreSQL share a region.
+
+**This does not change the completion recommendation.** The largest measured case, 5,000 changed products, takes 2.4 minutes in a background job the operator is not waiting on.

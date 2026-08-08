@@ -148,5 +148,6 @@ Ingest retailer rejections and feedback, route them to root cause, and close the
 | [deployment/AZURE_INFRASTRUCTURE.md](./deployment/AZURE_INFRASTRUCTURE.md) | Infrastructure plan |
 | [deployment/DEPLOYMENT_STATUS.md](./deployment/DEPLOYMENT_STATUS.md) | Environment checkpoint |
 | [architecture/MULTI_TENANCY.md](./architecture/MULTI_TENANCY.md) | Tenancy model |
+| [../PROJECT_STATE.md](../PROJECT_STATE.md) | **The canonical engineering checkpoint** — what exists, what is deployed, what is measured |
 | [architecture/ASYNC_IMPORT_ARCHITECTURE.md](./architecture/ASYNC_IMPORT_ARCHITECTURE.md) | Phase 1.0.2 audit, async import proposal, and both increments as built |
 | [releases/PHASE_1_0_2_COMPLETION.md](./releases/PHASE_1_0_2_COMPLETION.md) | Phase 1.0.2 completion report — before/after measurements and acceptance |
