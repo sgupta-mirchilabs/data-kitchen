@@ -204,7 +204,9 @@ export function ImportPreview({ headers, sampleRows, totalRows, warnings, filena
           background: "var(--mirchi)", color: "white",
           fontSize: 12, fontWeight: 600, cursor: "pointer",
         }}>
-          Map Fields
+          {/* On an exact template match this button imports immediately — it must
+              not promise a mapping screen the operator will never see. */}
+          {templateMatch?.kind === "exact" ? "Import Now" : "Map Fields"}
         </button>
       </div>
     </div>
