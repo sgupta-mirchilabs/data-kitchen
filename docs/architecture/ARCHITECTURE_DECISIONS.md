@@ -1,6 +1,6 @@
 # Data Kitchen Architecture Decision Record
 
-> **Last updated:** 2026-08-02
+> **Last updated:** 2026-08-08
 > **Scope:** Step 1 — Real Catalog Intake, Canonical Product Model, and Persistence
 > **Authors:** Sudu Gupta (Mirchi Labs)
 
@@ -460,6 +460,77 @@ On match, non-empty incoming fields overwrite existing fields. Empty/null incomi
 
 ---
 
+### ADR-026: One Authoritative Import Matcher
+
+| | |
+|---|---|
+| **Status** | Accepted (supersedes the per-row implementation of ADR-017) |
+| **Date** | 2026-08-08 |
+
+**Context:** "Which existing product does this row describe?" was answered in two places. `findDuplicate` asked it one row at a time during commit; `projectImportImpact` asked it once per file, batched, to warn the operator at the confirm screen which products an import would overwrite. Two implementations of one rule is one too many, and they had already drifted: the projection compared raw GTIN text against stored GTIN-14, so a 12-digit GTIN previewed as a create and committed as an update.
+
+**Decision:** `resolveImportMatches` is the single definition of the matching rule. Both the preview and the commit pipeline route through it. `findDuplicate` was deleted rather than left in place as a second, dead definition. The matching rule itself is unchanged (ADR-017): SKU first, GTIN only as a fallback, scoped to one catalog — and now to the organization as well, since both callers already know it.
+
+**Alternatives considered:**
+- **Keep both and add tests asserting they agree:** Tests would document the duplication rather than remove it, and would need extending every time either side changed.
+- **Have the preview call the commit path in a rolled-back transaction:** Exact by construction, but it would make opening the confirm screen as expensive as running the import.
+
+**Rationale:** The preview makes a promise to the operator — "this many creates, this many updates, and here is what you are about to overwrite" — and the commit is what actually happens. Nothing in the type system forces those to agree, so the only durable guarantee is that there is one implementation. Equivalence tests drive both routes to the matcher over shared fixtures and fail if either is changed alone.
+
+A consequence worth stating: in-file duplicate behaviour used to be *emergent*. A product created by row 3 was in the database by the time row 40 was matched, so row 40 updated it. A batched matcher has no such luck and reproduces it deliberately, registering pending creates in its index as it resolves. That property is what makes chunked commit (ADR-027) safe.
+
+---
+
+### ADR-027: Chunk-Granular Import Transactions
+
+| | |
+|---|---|
+| **Status** | Accepted (supersedes the per-row transaction boundary of ADR-002) |
+| **Date** | 2026-08-08 |
+
+**Context:** Phase 1.0.2 Increment A made imports durable but left the commit shape alone: one transaction per row, roughly twelve statements each. Measurement put throughput at 3.4 rows/sec at both 100 and 500 rows — flat, which is what cost-scales-with-rows looks like. A 10,000-row import extrapolated to 49 minutes.
+
+**Decision:** Commit one *chunk* per transaction rather than one row. A chunk is planned entirely in memory — one batched match query and one read of the products it will update — and written as bulk inserts inside a single transaction whose last statement advances the resume pointer. `IMPORT_CHUNK_SIZE` (default 100) was already the checkpoint interval and is now the transaction boundary.
+
+**Alternatives considered:**
+- **One transaction for the whole import:** Simplest to reason about, but it holds locks for the length of the run, makes partial progress impossible, and destroys the resume semantics Increment A was built to provide.
+- **Keep per-row transactions and only batch the inserts within them:** Removes the provenance loop but leaves the per-row match query and the per-row transaction overhead, which together were most of the cost.
+- **`INSERT ... ON CONFLICT` upserts against `idx_product_sku_catalog`:** Attractive on statement count, but it cannot express "only overwrite non-empty incoming fields" (ADR-017) without either a large generated expression per column or a semantic change. Rejected as complexity bought with correctness.
+
+**Rationale:** The durability invariant is unchanged in kind — `progress_rows` is still the highest fully committed source row, because it still commits with the work it counts. Only the size of the unit changed, and a chunk that fails rolls back its writes and its progress together.
+
+Two properties were preserved deliberately rather than by luck:
+
+- **Row-level fault isolation.** Per-row transactions meant one unimportable row cost one row. A chunk whose bulk commit fails is therefore replayed one row at a time. The replay doubles as proof that the failed bulk attempt left nothing behind, since `uq_source_record_batch_row` would reject it otherwise.
+- **Bounded lock duration.** Roughly 290 ms per 100-row chunk at 10,000 rows, versus a whole-import transaction of 33 seconds.
+
+Canonical UPDATE statements remain one per changed product. The update shape is per-row — which columns appear depends on which fields the row carried — so batching them means either a synthetic `VALUES` join or overwriting columns the row never mentioned. This is the one path where work still scales with rows, and it is a correctness choice, not an oversight.
+
+Measured result: 500 rows from 146 s to 2.0 s, 10,000 rows to 33 s, statements per row from 12.0 to 0.08.
+
+---
+
+### ADR-028: An Unchanged Row Writes No Product
+
+| | |
+|---|---|
+| **Status** | Accepted |
+| **Date** | 2026-08-08 |
+
+**Context:** Re-uploading the same export is normal operator behaviour. Every matched row previously issued an UPDATE, because `data_quality_status` and `updated_by` were set unconditionally — so re-importing an unchanged 10,000-row file rewrote 10,000 products to no effect.
+
+**Decision:** When a matched product already holds every value the row carries — no field differs, no new attribute, the same data-quality status, the same actor — the row produces no canonical write at all. It still produces its source record and its provenance.
+
+**Alternatives considered:**
+- **Keep writing unconditionally:** Honest about "this row was applied", but it costs a write per row and fills `updated_at` with events that changed nothing.
+- **Write only `updated_at`:** All of the cost, none of the information.
+
+**Rationale:** The source record is the record that the row was seen; the canonical product is the record of what is true. If nothing about the product changed, there is nothing to write, and history already agrees — an unchanged field never produced a history entry.
+
+The visible consequence is that `updated_at` no longer moves on an unchanged re-import. That is stated in the operator guide, because it is a behaviour change an operator could otherwise notice and mistrust. `/imports/:id/results` still counts such rows as updates, which is what the operator asked for and what happened.
+
+---
+
 ## Deferred Decisions
 
 The following architectural decisions have been intentionally postponed. Each includes the rationale for deferral and a sketch of the expected approach.
@@ -555,3 +626,6 @@ These are capabilities Data Kitchen is explicitly not trying to build. They are 
 | 2026-08-02 | PostgreSQL RLS deferred as defense-in-depth | Deferred | ADR-024 |
 | 2026-08-02 | Tenant-isolated blob storage with prefix enforcement | Accepted | ADR-025 |
 | 2026-08-02 | Deferred: AI agents, product identity, async, events | Deferred | — |
+| 2026-08-08 | One authoritative import matcher, shared by preview and commit | Accepted | ADR-026 |
+| 2026-08-08 | Chunk-granular import transactions (supersedes per-row) | Accepted | ADR-027 |
+| 2026-08-08 | An unchanged row writes no canonical product | Accepted | ADR-028 |

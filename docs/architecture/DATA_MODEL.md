@@ -224,19 +224,27 @@ erDiagram
 | Child of | `catalog` | Many-to-one | `import_batch.catalog_id` | RESTRICT |
 | Parent of | `source_record` | One-to-many | `source_record.import_batch_id` | RESTRICT |
 
-**Lifecycle:**
+**Lifecycle (Phase 1.0.2):**
 ```
-pending → uploaded → parsing → completed
-                           └──→ failed
+pending → uploaded → queued → processing → completed
+                                  │     └→ completed_with_warnings
+                                  ├────────→ failed
+                                  └────────→ cancelled
 ```
 
 1. **Pending** — initial state (default).
 2. **Uploaded** — file stored in blob storage, headers parsed, preview generated. The batch now has `detected_headers`, `file_storage_key`, `file_checksum`, and `total_rows`.
-3. **Parsing** — `confirmImport` called, file re-downloaded, row-by-row processing in progress. `field_mappings` are stored at this point.
-4. **Completed** — all rows processed. `successful_rows`, `warning_rows`, `failed_rows` are final. `error_summary` contains any warnings and errors.
-5. **Failed** — every row in the batch errored. Terminal state.
+3. **Queued** — the operator confirmed. `field_mappings` are stored, `progress_rows` is reset to 0, and the request returns `202`. Nothing has been committed yet.
+4. **Processing** — a worker holds the lease and is committing chunks. `progress_rows` advances inside each chunk's own transaction, so it is always the highest fully committed source row.
+5. **Completed / completed with warnings** — every row processed. `successful_rows`, `warning_rows`, `failed_rows` are final; `error_summary` carries the warnings and errors.
+6. **Failed** — every row errored, or attempts were exhausted. Terminal.
+7. **Cancelled** — stopped on request. Rows already committed remain; `progress_rows` records how many.
 
-A completed or failed batch cannot be re-imported. The batch is immutable after reaching a terminal state.
+**Job-execution columns.** `import_batch` doubles as the job record: `queued_at`, `started_at`, `completed_at`, `heartbeat_at`, `locked_by`, `lock_expires_at`, `attempts`, `max_attempts`, `progress_rows`, `error_code`, `error_message`, `cancel_requested_at`. They are kept logically distinct from the batch's business metadata so extracting a dedicated `ImportJob` table later stays mechanical.
+
+**`parse_metadata`** carries the parser's own findings (delimiter, encoding, row count) and, after a run completes, a `timings` object recording where the wall clock went: blob download, parse, batched matching, canonical writes, source records, provenance, history, resume pointer, chunk count and peak memory. It is diagnostic only — nothing reads it back.
+
+A batch in a terminal state cannot be re-imported and is immutable, except that a `failed` batch may be returned to `queued` for a bounded retry, which resumes from `progress_rows`.
 
 **Indexes:**
 | Index | Columns | Type | Purpose |
@@ -249,11 +257,10 @@ A completed or failed batch cannot be re-imported. The batch is immutable after 
 - An import batch targets exactly one catalog. A single file cannot be imported into multiple catalogs.
 - The file is stored in blob storage *before* any database writes. If storage fails, no batch record is created.
 - Field mappings are user-confirmed. The system suggests mappings via alias matching, but the user must confirm before import proceeds.
-- Row counts (`successful_rows`, `warning_rows`, `failed_rows`) are updated as a final step, not incrementally, to avoid partial state if the process crashes.
+- Row counts (`successful_rows`, `warning_rows`, `failed_rows`) are updated as a final step, not incrementally, to avoid partial state if the process crashes. Live progress comes from `progress_rows`, which *is* incremental and is the only counter safe to read mid-run.
 - `file_checksum` (SHA-256) is stored for future deduplication — detecting re-uploads of the same file.
 
 **Future Evolution:**
-- Async import: the batch status will gain an `in_progress` state with a job ID, and results will be polled rather than returned synchronously.
 - Re-import: a "re-import" action will create a *new* batch pointing to the same storage key, with potentially different field mappings. The original batch is never modified.
 - Source system tracking will become richer — linked to a registered source system table rather than a free-text string.
 
@@ -616,11 +623,16 @@ Duplicate detection operates within a single catalog using a two-tier strategy:
 
 **Why within a single catalog:** Different catalogs may represent different business contexts (a brand's own catalog vs. a supplier's catalog). The same SKU in two different catalogs may refer to different products. Cross-catalog deduplication is a future concern for the product identity layer.
 
+**Within one file:** a later row carrying the same SKU (or the same GTIN, when no SKU matched) resolves to the product an earlier row created, and updates it rather than creating a second one. Since Phase 1.0.2 this is stated explicitly in the matcher rather than emerging from the fact that the earlier row had already been committed.
+
 **Update semantics:**
 - Only non-null incoming values overwrite existing values.
 - Null or empty incoming fields are skipped — they never erase existing data.
 - JSONB `attributes` are merged (new keys added, existing keys updated, no keys removed).
 - Every changed field generates a history record.
+- A row that changes nothing writes nothing: if the matched product already holds every value the row carries, no UPDATE is issued and `updated_at` does not move. The source record and its provenance are still written (ADR-028).
+
+**Matching is batched, not per row.** One query resolves a whole chunk against the catalog, and the same function answers the confirm screen's "what will this overwrite?" projection, so preview and commit cannot disagree (ADR-026).
 
 **Index support:**
 - `idx_product_sku_catalog`: partial unique index on `(catalog_id, sku) WHERE sku IS NOT NULL` — enforces uniqueness and provides O(1) SKU lookup.

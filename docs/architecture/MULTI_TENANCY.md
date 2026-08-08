@@ -91,6 +91,7 @@ Every query below is performed without an `organizationId` filter:
 | `import.service.ts` | `findUnique({ where: { id } })` on ImportBatch | Confirm another org's import |
 | `import.service.ts` | `findUnique({ where: { id: productId } })` | Update another org's product |
 | `duplicate-resolver.ts` | `findFirst({ where: { catalogId, sku } })` | Duplicate match within unverified catalog |
+| *(Phase 1.0.2)* `import-matching.ts` replaces the row above. It scopes on **both** `catalogId` and `organizationId`, and every caller supplies the organization. | | |
 | `product.routes.ts` | `findMany({ where: { catalogId } })` | List another org's products |
 | `product.routes.ts` | `findUnique({ where: { id } })` | Read another org's product |
 | `product.routes.ts` | `findMany({ where: { canonicalProductId } })` | Read another org's source records |
@@ -380,7 +381,7 @@ Every `findUnique({ where: { id } })` and `findFirst({ where: { catalogId } })` 
 5. `import.routes.ts` — `POST /imports/:id/confirm` must add org filter
 6. `import.routes.ts` — `GET /imports/:id/results` must add org filter
 7. `import.service.ts` — `confirmImport()` must accept and verify org context
-8. `duplicate-resolver.ts` — `findDuplicate()` already scopes by catalogId (adequate since catalogs are org-scoped)
+8. `duplicate-resolver.ts` — `findDuplicate()` already scopes by catalogId (adequate since catalogs are org-scoped). **Superseded in Phase 1.0.2:** replaced by `import-matching.ts`, which scopes on catalog *and* organization — adequate became belt-and-braces, verified live by an acceptance run in which 25 identical SKUs in a neighbouring tenant were untouched.
 9. `product.routes.ts` — All 5 product routes must add org filters
 
 ### 2.5 Data Access Architecture

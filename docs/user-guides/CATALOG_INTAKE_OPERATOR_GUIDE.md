@@ -165,6 +165,20 @@ Return to **Import History** at any time to see the outcome.
 
 **Row limit.** A file exceeding the configured row limit is now **refused outright** and nothing is imported. Previously the extra rows were silently discarded and the import reported success. Split the file, or ask an administrator to raise `MAX_IMPORT_ROWS`.
 
+**How long it takes.** Measured against the internal development database:
+
+| Rows | Typical duration |
+|---|---|
+| 100 | about 1 second |
+| 500 | about 2 seconds |
+| 1,000 | about 3.5 seconds |
+| 2,500 | about 9 seconds |
+| 10,000 | about 33 seconds |
+
+These are for files of new products. An import that updates many existing products is slower, because each changed product is written individually.
+
+**Re-importing the same file is cheap and harmless.** If every row matches a product that already holds exactly the values in the file, nothing is written to those products — no change, no history entry, and the product's "last updated" time does not move. The import still records the rows it saw: source records and provenance are written as always, and Import History shows the rows as updates. This is the expected result of uploading the same export twice.
+
 ---
 
 ## 10. Import summary
@@ -243,7 +257,7 @@ The frontend could not reach the API. Confirm the backend is healthy at `/api/v1
 | File size | 50 MB |
 | Rows per import | 10,000 |
 | Formats | CSV, JSON. **PDF is Phase 1.1** |
-| Import mode | Synchronous — keep the tab open |
+| Import mode | Background — confirm, then close the tab if you like |
 | Deleting products | Not available in the UI |
 | Editing products | Not available in the UI — imports only |
 | Retailer Readiness, Mapping Studio, Validation & Exceptions, Delivery, Retail Feedback | Navigation exists, marked *Not available yet*. Phase 2/3 |

@@ -236,6 +236,8 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 - Material parse or resume cost relative to commit cost
 - Substantially larger import sizes than the current 10,000-row limit
 
+**Post-Increment-B evidence (2026-08-08).** Reconfirmed, not revisited. A 10,000-row import now takes 33 seconds end to end, of which parsing is 41 ms — so re-deriving rows on retry costs a fraction of a second against a run measured in tens of seconds. Chunk-boundary resume via `progress_rows` was exercised directly: an attempt aborted after chunk 1, was reclaimed, and resumed at row 101 with no duplicated source, provenance or history. The triggers above are unchanged.
+
 **Phase 1.1 note.** PDF Intake is likely to strengthen the case materially. Extracting structured data from a document is expensive and lossy in a way CSV parsing is not, and extracted state plausibly needs durable operator review before commit. Both are staging's core justifications, so this should be re-evaluated when Phase 1.1 is designed rather than treated as settled.
 
 ---
@@ -248,11 +250,13 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 
 **Current phase:** 1.0.2 (evaluated, deferred) - **Target phase:** TBD - **Priority:** P2
 
-**Dependencies.** Memory instrumentation at 1,000 / 10,000 / 50,000 rows must exist first.
+**Dependencies.** Memory instrumentation at 1,000 / 10,000 / 50,000 rows must exist first — **partially satisfied**: the pipeline now records peak heap and RSS per run, and the benchmark harness reports them at every size up to 10,000.
 
 **Status:** Backlog
 
 **Triggers.** Measured memory pressure on the 1.75 GB B1 instance, likely above ~50,000 rows.
+
+**Post-Increment-B evidence (2026-08-08).** The measurement the deferral was waiting on now exists, and it says the same thing. Peak heap across the sweep: 36 MB at 100 rows, 40 MB at 1,000, 59 MB at 2,500, 70–89 MB at 10,000 — sub-linear, and well inside the instance. Parsing is 41 ms of a 32,742 ms run, 0.1%. Streaming would rewrite verified parsing code to reclaim a tenth of a percent of the wall clock and memory that is not scarce. The trigger remains a materially higher `MAX_IMPORT_ROWS`, not a bigger file at the current limit.
 
 ---
 
@@ -270,6 +274,8 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 
 **Triggers.** More than one worker instance; queue depth persistently above ~100 or oldest-queued-age in minutes; another service needing import events; priority or scheduled execution; poll load on Postgres becoming measurable.
 
+**Post-Increment-B evidence (2026-08-08).** Reconfirmed. Imports now clear roughly 20× faster, so queue depth is 20× less likely to be the thing that forces a broker. The acquisition query is still the only piece a migration would replace.
+
 ---
 
 ## DB-016 - Multi-instance import workers
@@ -283,3 +289,5 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 **Dependencies.** Requires resolving startup-migration-vs-scale-out first.
 
 **Status:** Backlog
+
+**Post-Increment-B note (2026-08-08).** One item to re-measure if this is ever enabled: chunk transactions now hold write locks for roughly 290 ms each (100 rows at 10,000-row scale), where Increment A held them for a few milliseconds per row. That is immaterial with a single writer and is worth checking with several. The lease protocol itself is unchanged and remains correct for multiple workers — a durability test aborts an attempt by lease loss and resumes it on a second worker.

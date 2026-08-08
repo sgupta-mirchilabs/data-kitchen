@@ -245,10 +245,12 @@ server/
 │   │   ├── storage.factory.ts      # Provider selection factory
 │   │   └── tenant-scoped.storage.ts# Tenant-prefixed storage wrapper
 │   ├── services/
-│   │   ├── import.service.ts       # Import orchestration
+│   │   ├── import.service.ts       # Import orchestration; chunk loop
+│   │   ├── import-chunk.ts         # Chunk planning — pure, no DB access
+│   │   ├── import-matching.ts      # SKU/GTIN matching, batched (authoritative)
+│   │   ├── import-projection.ts    # Preview impact, via the same matcher
 │   │   ├── audit.service.ts        # Append-only audit logging
 │   │   ├── normalizer.ts           # Field mapping & normalization
-│   │   ├── duplicate-resolver.ts   # SKU/GTIN duplicate detection
 │   │   ├── history.ts              # Change tracking & serialization
 │   │   └── parser/
 │   │       ├── parser.types.ts     # Shared parser types
@@ -775,12 +777,12 @@ The architecture is designed to support the following expansions without requiri
 - Change history provides a feedback signal for auto-heal accuracy
 - The deferred product identity layer (ADR-011) will support AI-driven product reconciliation
 
-### Async Processing
-- The synchronous import pipeline can be extracted to a job worker
-- The `ImportService` class is already decoupled from the HTTP layer
-- Add a job table, move `confirmImport` to a worker, change the HTTP endpoint to return a job ID
+### Async Processing — delivered in Phase 1.0.2
+- Imports run in a PostgreSQL-backed job with leasing, heartbeat and restart recovery; confirm returns `202`
+- Work is committed one chunk at a time (`IMPORT_CHUNK_SIZE`, default 100), and the resume pointer advances inside the chunk's own transaction
+- Scaling beyond one worker instance needs an external queue (DB-015) and scale-out (DB-016), both still deferred. The lease protocol is already correct for both
 
 ### Event-Driven Architecture
 - Domain events (`ProductCreated`, `ProductUpdated`, `FieldChanged`) can be emitted from the import service
 - Multiple consumers (readiness recalculation, webhook notifications, search index updates) can subscribe
-- The per-row transaction boundary is the natural event emission point
+- The chunk transaction boundary is the natural emission point — events would be buffered while the chunk is planned and emitted after it commits, so no event describes work that later rolled back

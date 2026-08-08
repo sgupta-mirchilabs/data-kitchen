@@ -80,7 +80,7 @@ The prototype validated the product concept and pipeline architecture with stake
 
 ### Phase 1.0.2: Import Scalability & Background Processing
 
-**Status:** In Progress — **Increment A (durability) deployed 2026-08-08**. Increment B (throughput) not started.
+**Status:** Complete — **Increment A (durability) deployed 2026-08-08**, **Increment B (throughput) delivered and measured 2026-08-08**. 10,000 rows import in 33 seconds, down from an extrapolated 49 minutes; 12 database statements per row down to 0.08. Accepted end to end against the development environment (25/25 checks).
 
 **Purpose:** Make Catalog Intake safe and usable at hundreds to tens of thousands of rows without requiring the operator to hold an HTTP request or browser tab open.
 

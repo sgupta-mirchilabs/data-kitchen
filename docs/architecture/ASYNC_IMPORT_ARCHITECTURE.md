@@ -1,6 +1,6 @@
 # Async Import Architecture — Phase 1.0.2 Audit & Proposal
 
-> **Status:** Approved. **Increment A delivered and deployed 2026-08-08** (commit `df12cd6`). Increment B not started.
+> **Status:** Approved. **Increment A delivered and deployed 2026-08-08** (commit `df12cd6`). **Increment B delivered and measured 2026-08-08** (commits `5b6c3cd`, `4232ab4`) — see [§11](#11-increment-b--as-built).
 > **Date:** 2026-08-08
 > **Scope:** Make Catalog Intake safe and usable at hundreds → tens of thousands of rows without holding an HTTP request open.
 > **Preserves:** canonical model, SKU-first/GTIN-second resolution, catalog scoping, organization isolation, immutable SourceRecord, provenance, history, audit, mapping templates, validation and duplicate warnings, merge semantics, Blob Storage layout.
@@ -495,3 +495,218 @@ The Increment A durability test (`import-resume.test.ts`) commits 321
 row-transactions in **42 seconds**, ≈130 ms per row-transaction against the same
 remote instance. Recorded separately because it exercises the transaction shape
 rather than the full pipeline.
+
+---
+
+## 11. Increment B — as built
+
+Delivered 2026-08-08. Objective: eliminate the serial per-row database round trip
+without changing what an import means.
+
+### 11.1 What changed
+
+**One authoritative matcher.** "Which existing product does this row describe?"
+was answered in two places — `findDuplicate`, one query per row, in the commit
+pipeline; and `projectImportImpact`, one batched query, for the confirm screen.
+Two implementations of one rule had already drifted: the preview compared raw
+GTIN text against stored GTIN-14, so a 12-digit GTIN previewed as a create and
+committed as an update. `resolveImportMatches` is now the single definition and
+both callers route through it. `findDuplicate` was deleted rather than left as a
+second, dead definition.
+
+The rule is unchanged — SKU first, GTIN only as a fallback, catalog-scoped — and
+is now organization-scoped as well, since both callers already know the
+organization.
+
+In-file duplicate behaviour was previously *emergent*: a product created by row 3
+was in the database by the time row 40 was matched, so row 40 updated it.
+A batched resolver has to reproduce that deliberately, so rows are registered in
+the index as they resolve, and a stable `createIndex` lets several rows agree on
+one product before any id exists.
+
+**Chunk-granular commit.** A chunk is planned entirely in memory — one batched
+match query and one read of the products it will update — and committed as a
+single transaction whose last statement advances the resume pointer. Creates,
+source records, provenance and history are bulk inserts, split at 500 records to
+stay inside PostgreSQL's bind-parameter limit. `IMPORT_CHUNK_SIZE` was already
+the checkpoint interval; it is now the transaction boundary as well.
+
+**Unchanged rows cost nothing.** A matched row whose product already holds every
+value it carries produces no canonical write at all. Before, such a row rewrote
+`data_quality_status` and `updated_by` unconditionally.
+
+### 11.2 What deliberately did not change
+
+**Canonical UPDATEs are still one statement per changed product.** The update
+shape is per-row — which columns appear depends on which fields the row carried
+— so batching them means either a synthetic `VALUES` join or overwriting columns
+the row never mentioned. Correctness first. The saving that matters is that
+products which do not change are not written at all.
+
+**Row-level fault isolation.** Increment A gave every row its own transaction, so
+one unimportable row cost one row. Under chunking a naive implementation would
+cost the whole chunk. A chunk whose bulk commit fails is therefore replayed one
+row at a time. The replay is also the proof that the failed bulk attempt left
+nothing behind — `uq_source_record_batch_row` would reject it otherwise.
+
+**The durability invariant.** `progress_rows` still means the highest FULLY
+committed source row, because it still commits with the work it counts. What
+changed is only the size of the unit: a chunk that fails rolls back its writes
+and its progress together.
+
+### 11.3 Measured — before and after
+
+Same harness (`server/test/bench/import-bench.ts`), same Azure PostgreSQL
+instance (`datakitchen-db-dev`, Standard_B1ms), same synthetic all-create
+fixtures, same statement counting from Prisma's query event stream.
+
+| rows | before ms | after ms | speed-up | before rows/s | after rows/s |
+|---|---|---|---|---|---|
+| 100 | 29,750 | **874** | 34x | 3.4 | **114.4** |
+| 500 | 146,279 | **2,020** | 72x | 3.4 | **247.5** |
+| 1,000 | *~4.9 min (extrapolated)* | **3,498** | ~84x | — | **285.9** |
+| 2,500 | *~12 min (extrapolated)* | **9,089** | ~79x | — | **275.1** |
+| 10,000 | *~49 min (extrapolated)* | **32,742** | ~90x | — | **305.4** |
+
+| rows | before statements | after statements | before /row | after /row | before txns | after txns |
+|---|---|---|---|---|---|---|
+| 100 | 1,213 | **19** | 12.1 | **0.19** | 102 | **3** |
+| 500 | 6,020 | **51** | 12.0 | **0.10** | 502 | **7** |
+| 1,000 | — | **91** | — | **0.09** | — | **12** |
+| 2,500 | — | **212** | — | **0.08** | — | **27** |
+| 10,000 | — | **813** | — | **0.08** | — | **102** |
+
+The rows marked *extrapolated* are the arithmetic recorded in section 10 before
+Increment B, repeated here for comparison and still not measurements.
+
+**The shape of the curve is the finding.** Before, throughput was 3.4 rows/sec at
+both 100 and 500 rows — flat, which is what "cost scales with rows" looks like.
+After, throughput *rises* with file size (114 to 306 rows/sec) as fixed per-run
+cost is amortised, then plateaus. Statements per row falls from 12.1 to 0.08 and
+keeps falling as files grow.
+
+### 11.4 Where the time goes now (10,000 rows)
+
+| phase | ms | share |
+|---|---|---|
+| blob download | 3 | <1% |
+| parse | 41 | <1% |
+| batched matching (100 queries) | 2,662 | 8% |
+| read products to update | 0 | 0% (all creates) |
+| in-memory planning | 23 | <1% |
+| canonical writes | 5,129 | 16% |
+| source records | 4,402 | 13% |
+| provenance | 11,871 | 36% |
+| history | 0 | 0% (all creates) |
+| resume pointer | 2,438 | 7% |
+| **total inside chunk transactions** | **28,912** | **88%** |
+
+Parsing is now 0.1% of the run, which is direct evidence that streaming (DB-014)
+remains correctly deferred. The dominant cost is provenance — six rows per source
+row, 60,000 inserts — and it is already bulk; what remains is the volume of data
+itself, not round trips.
+
+### 11.5 Statements by table (10,000 rows)
+
+| table | statements | per row | what it is |
+|---|---|---|---|
+| `canonical_product` | 200 | 0.02 | 1 match query + 1 bulk create per chunk |
+| `field_provenance` | 200 | 0.02 | 2 bulk inserts per chunk (600 rows, split at 500) |
+| `import_batch` | 107 | 0.01 | resume pointer per chunk, heartbeats, terminal transition |
+| `source_record` | 100 | 0.01 | 1 bulk insert per chunk |
+
+Compare the 500-row pre-B profile in section 10: `field_provenance` alone was
+6.0 statements per row.
+
+### 11.6 Memory
+
+| rows | peak heap MB | peak RSS MB |
+|---|---|---|
+| 100 | 36 | 109 |
+| 500 | 38 | 120 |
+| 1,000 | 40 | 129 |
+| 2,500 | 59 | 160 |
+| 10,000 | 70–89 | 195–264 |
+
+Growth is sub-linear and the 10,000-row peak sits well inside the 1.75 GB B1
+instance. The whole file is still parsed into memory and every row is normalized
+up front; at 10,000 rows — the configured `MAX_IMPORT_ROWS` — that costs under
+90 MB of heap. Memory is still not the constraint.
+
+### 11.7 Verification
+
+| Concern | How it is held |
+|---|---|
+| Preview and commit classify identically | 39 unit equivalence assertions over 13 fixtures, driving both routes to the matcher |
+| Matching rule, including in-file duplicates | 20 unit tests on the matcher |
+| Chunk planning semantics | 28 unit tests — creates, updates, unchanged, history chaining, provenance linkage, insert slicing |
+| Chunk rollback | Integration: a failed bulk commit replays row-by-row, and the unique index proves nothing leaked |
+| Total commit failure | Integration: no product, provenance or history written; only diagnostic error records |
+| Row-level fault isolation | Integration: a 300-character SKU fails alone; the other 29 rows commit |
+| Attempt dies mid-file | Integration: lease loss aborts after chunk 1; progress names a chunk boundary and describes exactly what is durable |
+| Reclaim and resume | Integration: expired lease, second worker, resumes at row 101, 300 distinct rows total |
+| Retry writes nothing twice | Integration: re-lease after completion writes nothing; re-import of an identical file changes no product and no `updated_at` |
+| Chunk size is configuration, not semantics | Integration: identical results at chunk sizes 1, 7 and 1000 |
+| Query counts scale by chunk | Integration at 500 and 1,000 rows, plus a same-file 10-chunk vs 2-chunk comparison |
+
+Totals: **257 unit tests, 60 integration tests**, all green against the deployed
+instance.
+
+### 11.8 Operator acceptance — 10,000 rows
+
+Run 2026-08-08 through the running API and the real in-process worker
+(`server/test/acceptance/ten-thousand-row-import.ts`), synthetic data only,
+against `datakitchen-db-dev`. **25/25 checks passed.**
+
+| Check | Result |
+|---|---|
+| Upload parses 10,000 rows | 689 ms |
+| Preview projects 10,000 creates, ignoring identical SKUs elsewhere | pass |
+| Confirm returns 202 | 477 ms |
+| Operator closes the browser (20 s, no client contact) | import reached row 6,100 unattended |
+| Progress advances while polling | 6 distinct values across 7 polls |
+| Terminal state | `completed_with_warnings` in 32,093 ms — 312 rows/sec |
+| Import History shows the status and counts | pass |
+| Results reconcile | 10,000 total / 10,000 successful / 0 failed / 10,000 created |
+| Stored totals reconcile | 10,000 products, 10,000 source records, 10,000 distinct row numbers, 60,000 provenance, 0 history |
+| Tenant isolation | 25 identical SKUs in a neighbouring organization untouched |
+| Catalog isolation | 25 identical SKUs in a sibling catalog of the same organization untouched |
+| Memory | 89 MB heap / 264 MB RSS |
+| Chunking | 100 chunks of 100, 0 needing row-by-row isolation |
+
+The `completed_with_warnings` status is correct and expected: the fixture maps no
+GTIN column, so every row raises `GTIN_MISSING` (KI-2). That is unchanged
+behaviour, not a regression.
+
+### 11.9 Deviations and known limitations
+
+**`updated_at` no longer moves on an unchanged re-import.** This is the visible
+consequence of skipping the write, and it is intentional: re-importing an
+unchanged file is now free rather than rewriting every product in the catalog.
+Source records and provenance are still written, so the import remains evidence
+the row was seen, and `/imports/:id/results` still counts such rows as updates.
+
+**Canonical UPDATE statements still scale with changed products.** An import
+where every row modifies an existing product will issue one UPDATE per product.
+That is a deliberate correctness choice (11.2), and it is the one path where work
+still scales with rows rather than chunks.
+
+**A whole file is still parsed and normalized in memory.** Bounded by
+`MAX_IMPORT_ROWS` (10,000) and measured at under 90 MB of heap. Raising that
+limit materially is the trigger to revisit DB-014.
+
+**Chunk transactions hold locks for their duration** — roughly 290 ms per
+100-row chunk at 10,000 rows. Acceptable on a single-writer instance; it is a
+factor to re-measure if multiple workers are ever enabled (DB-016).
+
+### 11.10 What remains deferred, and the trigger for each
+
+Unchanged by Increment B. The measurements above strengthen rather than weaken
+each deferral.
+
+| Item | Trigger to revisit |
+|---|---|
+| **DB-013** staging layer | Phase 1.1 PDF Intake, where extraction is expensive and lossy and plausibly needs durable review before commit; or files beyond ~50,000 rows where re-parsing on resume becomes the dominant cost |
+| **DB-014** streaming parse | `MAX_IMPORT_ROWS` raised materially above 10,000, or measured heap approaching the instance limit. Parsing is currently 0.1% of a 10,000-row run |
+| **DB-015** external queue (Service Bus) | More than one worker instance, cross-process fan-out, or a need for delivery guarantees the database queue cannot express |
+| **DB-016** multi-instance workers | Scale-out of App Service, which is separately blocked while startup migrations are in use. The lease protocol is already correct for it |

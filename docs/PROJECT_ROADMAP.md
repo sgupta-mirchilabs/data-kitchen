@@ -16,7 +16,7 @@
 | **Phase 0** | Prototype | ✅ Complete |
 | **Phase 1** | Catalog Intake | ✅ Complete |
 | **Phase 1.0.1** | Cleanup Sprint | ✅ Complete |
-| **Phase 1.0.2** | Import Scalability & Background Processing | 🔄 **Current** — Increment A deployed, awaiting acceptance |
+| **Phase 1.0.2** | Import Scalability & Background Processing | ✅ Complete — durable async imports, 10,000 rows in 33 s |
 | **Phase 1.1** | PDF Intake | ⬜ Next |
 | **Phase 2** | Retail Intelligence Library | ⬜ Planned |
 | **Phase 3** | Mapping Engine | ⬜ Planned |
@@ -54,13 +54,25 @@ Polish and correctness for internal operators. No new platform capability.
 
 ---
 
-## Phase 1.0.2 — Import Scalability & Background Processing 🔄
+## Phase 1.0.2 — Import Scalability & Background Processing ✅
 
 Durable asynchronous imports: the operator confirms, receives a 202, and may close the browser. Processing continues in a PostgreSQL-backed job with leasing, restart recovery, chunked transactions and visible progress.
 
-**Audit finding:** the pipeline issues **12-19 serial database round trips per row** and runs inside the HTTP request with no persisted job state, so a restart loses the run with no recovery and no terminal failure state. Matching itself is correctly indexed; round-trip count is the cost.
+**Audit finding:** the pipeline issued **12-19 serial database round trips per row** and ran inside the HTTP request with no persisted job state, so a restart lost the run with no recovery and no terminal failure state. Matching itself was correctly indexed; round-trip count was the cost.
 
-[ASYNC_IMPORT_ARCHITECTURE.md](./architecture/ASYNC_IMPORT_ARCHITECTURE.md) — **awaiting approval; no implementation started**
+**Delivered.** Increment A made imports durable. Increment B removed the per-row round trip: a chunk is planned in memory and committed as one transaction, and matching is a single batched query shared with the confirm-screen preview.
+
+| | before | after |
+|---|---|---|
+| 500 rows | 146 s | **2.0 s** |
+| 10,000 rows | ~49 min (extrapolated) | **33 s** |
+| statements per row | 12.0 | **0.08** |
+
+Accepted end to end against the development environment: 10,000 synthetic rows through the real API and worker, browser closed mid-run, 25/25 checks including tenant and catalog isolation.
+
+[ASYNC_IMPORT_ARCHITECTURE.md](./architecture/ASYNC_IMPORT_ARCHITECTURE.md) · 📄 [PHASE_1_0_2_COMPLETION.md](./releases/PHASE_1_0_2_COMPLETION.md)
+
+**Deferred out of this phase:** DB-013 (staging), DB-014 (streaming), DB-015 (Service Bus), DB-016 (multi-instance workers).
 
 ---
 
@@ -136,4 +148,5 @@ Ingest retailer rejections and feedback, route them to root cause, and close the
 | [deployment/AZURE_INFRASTRUCTURE.md](./deployment/AZURE_INFRASTRUCTURE.md) | Infrastructure plan |
 | [deployment/DEPLOYMENT_STATUS.md](./deployment/DEPLOYMENT_STATUS.md) | Environment checkpoint |
 | [architecture/MULTI_TENANCY.md](./architecture/MULTI_TENANCY.md) | Tenancy model |
-| [architecture/ASYNC_IMPORT_ARCHITECTURE.md](./architecture/ASYNC_IMPORT_ARCHITECTURE.md) | Phase 1.0.2 audit and async import proposal |
+| [architecture/ASYNC_IMPORT_ARCHITECTURE.md](./architecture/ASYNC_IMPORT_ARCHITECTURE.md) | Phase 1.0.2 audit, async import proposal, and both increments as built |
+| [releases/PHASE_1_0_2_COMPLETION.md](./releases/PHASE_1_0_2_COMPLETION.md) | Phase 1.0.2 completion report — before/after measurements and acceptance |
