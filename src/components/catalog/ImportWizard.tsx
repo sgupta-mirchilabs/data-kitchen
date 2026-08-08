@@ -41,6 +41,14 @@ interface UploadResponse {
     }>;
     overwrittenRows: number;
   };
+  projection?: {
+    totalRows: number;
+    distinctProducts: number;
+    willCreate: number;
+    willUpdate: number;
+    existingMatches: Array<{ key: string; matchedOn: "sku" | "gtin"; productName: string | null }>;
+    existingMatchesTruncated: number;
+  };
 }
 
 interface ImportResultData {
@@ -201,6 +209,7 @@ export function ImportWizard({ catalogId, catalogName, catalogType, onClose, onI
                 filename={filename}
                 templateMatch={uploadData.templateMatch}
                 duplicates={uploadData.duplicates}
+                projection={uploadData.projection}
                 onContinue={() => {
                   // An exact template match already resolves every column, so the
                   // mapping screen would ask the operator to re-confirm work they

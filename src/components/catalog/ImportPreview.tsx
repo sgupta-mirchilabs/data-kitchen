@@ -31,15 +31,64 @@ interface Props {
     }>;
     overwrittenRows: number;
   };
+  projection?: {
+    totalRows: number;
+    distinctProducts: number;
+    willCreate: number;
+    willUpdate: number;
+    existingMatches: Array<{ key: string; matchedOn: "sku" | "gtin"; productName: string | null }>;
+    existingMatchesTruncated: number;
+  };
   onContinue: () => void;
   onReviewMapping?: () => void;
   onCancel: () => void;
 }
 
-export function ImportPreview({ headers, sampleRows, totalRows, warnings, filename, templateMatch, duplicates, onContinue, onReviewMapping, onCancel }: Props) {
+export function ImportPreview({ headers, sampleRows, totalRows, warnings, filename, templateMatch, duplicates, projection, onContinue, onReviewMapping, onCancel }: Props) {
   const dupGroups = duplicates?.groups ?? [];
+  const willUpdate = projection?.willUpdate ?? 0;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* What this import will do to the catalog. Shown first because
+          overwriting existing products is the highest-impact outcome, and it
+          was previously invisible until the results screen. */}
+      {projection && projection.distinctProducts > 0 && (
+        <div style={{
+          padding: "12px 14px", borderRadius: 8,
+          background: willUpdate > 0 ? "var(--amber-dim)" : "var(--surface-raised)",
+          border: `1px solid ${willUpdate > 0 ? "rgba(245,158,11,0.25)" : "var(--border)"}`,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            {willUpdate > 0
+              ? <AlertTriangle size={14} color="var(--amber)" />
+              : <CheckCircle2 size={14} color="var(--green)" />}
+            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)" }}>
+              This import will{" "}
+              <span style={{ color: willUpdate > 0 ? "var(--amber)" : "var(--text-primary)" }}>
+                update {projection.willUpdate} existing product{projection.willUpdate === 1 ? "" : "s"}
+              </span>{" "}
+              and create {projection.willCreate} new product{projection.willCreate === 1 ? "" : "s"}.
+            </span>
+          </div>
+          {projection.existingMatches.length > 0 && (
+            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+              Existing products affected:{" "}
+              <span style={{ fontFamily: "monospace", color: "var(--text-primary)" }}>
+                {projection.existingMatches.map((m) => m.key).join(", ")}
+              </span>
+              {projection.existingMatchesTruncated > 0 &&
+                ` and ${projection.existingMatchesTruncated} more`}
+              .
+            </div>
+          )}
+          {willUpdate > 0 && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 5 }}>
+              Their current values will be replaced by this file. Previous values remain in each
+              product's history.
+            </div>
+          )}
+        </div>
+      )}
       {/* Saved mapping template */}
       {templateMatch && templateMatch.kind !== "none" && (
         <div style={{

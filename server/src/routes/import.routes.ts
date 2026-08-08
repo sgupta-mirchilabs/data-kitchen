@@ -3,6 +3,7 @@ import "../types.js";
 import { ImportService } from "../services/import.service.js";
 import { suggestFieldMappings, type FieldMapping } from "../services/normalizer.js";
 import { detectDuplicateSkus, countOverwrittenRows } from "../services/duplicate-detection.js";
+import { projectImportImpact } from "../services/import-projection.js";
 import { findTemplateMatch, saveTemplate } from "../services/mapping-template.service.js";
 import { ValidationError, FileTooLargeError } from "../errors/api-errors.js";
 import { requirePermission } from "../auth/permissions.js";
@@ -69,6 +70,14 @@ export async function importRoutes(app: FastifyInstance) {
       // scanning it would miss duplicates and understate the warning.
       const duplicateGroups = detectDuplicateSkus(result.allRows, suggestedMappings.sku);
 
+      // What this import will do to products ALREADY in the catalog. The
+      // in-file duplicate warning above only covers collisions within the
+      // upload; overwriting existing products is the more consequential case
+      // and was previously silent until the results screen.
+      const projection = await projectImportImpact(
+        app.prisma, catalogId, result.allRows, suggestedMappings.sku, suggestedMappings.gtin,
+      );
+
       await writeAuditLog(app.prisma, {
         organizationId: ctx.organizationId,
         userId: ctx.userId,
@@ -96,6 +105,17 @@ export async function importRoutes(app: FastifyInstance) {
           duplicates: {
             groups: duplicateGroups,
             overwrittenRows: countOverwrittenRows(duplicateGroups),
+          },
+          projection: {
+            totalRows: projection.totalRows,
+            distinctProducts: projection.distinctProducts,
+            willCreate: projection.willCreate,
+            willUpdate: projection.willUpdate,
+            // Cap the listing; the counts above remain exact.
+            existingMatches: projection.existingMatches.slice(0, 25).map((m) => ({
+              key: m.key, matchedOn: m.matchedOn, productName: m.productName,
+            })),
+            existingMatchesTruncated: Math.max(0, projection.existingMatches.length - 25),
           },
         },
       });
