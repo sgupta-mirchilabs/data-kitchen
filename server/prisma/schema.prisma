@@ -108,7 +108,9 @@ model ImportBatch {
   sourceSystem    String?  @map("source_system") @db.VarChar(100)
   uploadedBy      String?  @map("uploaded_by") @db.VarChar(255)
   uploadedAt      DateTime @default(now()) @map("uploaded_at") @db.Timestamptz()
-  status          String   @default("pending") @db.VarChar(20)
+  /// Job state. Widened from VarChar(20) in Phase 1.0.2: "completed_with_warnings"
+  /// is 23 characters and was silently rejected by the old column.
+  status          String   @default("pending") @db.VarChar(40)
   totalRows       Int      @default(0) @map("total_rows")
   successfulRows  Int      @default(0) @map("successful_rows")
   warningRows     Int      @default(0) @map("warning_rows")

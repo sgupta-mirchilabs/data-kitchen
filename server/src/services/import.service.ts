@@ -214,15 +214,19 @@ export class ImportService {
     }
 
     let cancelled = false;
-    let chunkStart = Date.now();
+    // Heartbeat at roughly a third of the lease so a slow row cannot let the
+    // lease lapse, and always on the final row so a short file still reports.
+    const livenessIntervalMs = Math.max(2000, Math.floor(opts.leaseMs / 3));
+    let lastLivenessAt = Date.now();
+    const lastRowNumber = parseResult.rows.length > 0
+      ? parseResult.rows[parseResult.rows.length - 1].rowNumber
+      : 0;
 
     for (const row of parseResult.rows) {
       // Resume: rows below committed progress were durably applied by a prior
       // attempt. The (import_batch_id, row_number) unique index remains a
       // defensive backstop, not the mechanism relied on here.
       if (row.rowNumber <= resumeFrom) continue;
-
-      const isChunkBoundary = row.rowNumber % opts.chunkSize === 0;
 
       try {
         const { product: normalized, provenance } = normalizeRow(row.data, fieldMappings);
@@ -351,6 +355,11 @@ export class ImportService {
                   },
                 });
               }
+
+              // Resume pointer advances with the row's own writes. If this
+              // transaction rolls back the pointer rolls back with it, so
+              // progress_rows is always the highest FULLY committed row.
+              await advanceProgress(tx, importBatchId, row.rowNumber);
             });
 
             updatedProducts++;
@@ -410,6 +419,10 @@ export class ImportService {
                 },
               });
             }
+
+            // See the update path: the resume pointer is part of the row's
+            // transaction, not a separate write.
+            await advanceProgress(tx, importBatchId, row.rowNumber);
           });
 
           createdProducts++;
@@ -420,17 +433,17 @@ export class ImportService {
         }
         successfulRows++;
 
-        // Progress is stamped in the same transaction that commits the row
-        // closing the chunk, so it can never claim uncommitted work.
-        if (isChunkBoundary) {
-          await this.prisma.$transaction(async (tx) => {
-            await advanceProgress(tx, importBatchId, row.rowNumber);
-          });
+        // Liveness and cancellation are time-based, not row-modulo. A file
+        // smaller than one chunk previously never reached a boundary, so it
+        // never heartbeat and never checkpointed. Progress no longer depends on
+        // this block at all — it is committed with each row above.
+        const isFinalRow = row.rowNumber === lastRowNumber;
+        if (Date.now() - lastLivenessAt >= livenessIntervalMs || isFinalRow) {
           const stillOwned = await heartbeat(this.prisma, importBatchId, opts.workerId, opts.leaseMs);
-          log({ event: "import.chunk", importBatchId, throughRow: row.rowNumber,
-                chunkMs: Date.now() - chunkStart,
+          log({ event: "import.progress", importBatchId, throughRow: row.rowNumber,
+                sinceLastMs: Date.now() - lastLivenessAt,
                 heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1048576) });
-          chunkStart = Date.now();
+          lastLivenessAt = Date.now();
 
           // Losing the lease means another worker reclaimed this job; stopping
           // immediately avoids two workers committing the same import.
