@@ -187,9 +187,20 @@ Unchanged, with the trigger for each restated in [DEFERRED_BACKLOG.md](../DEFERR
 
 **Phase 1.0.2 is complete.** Both objectives are met and demonstrated end to end against the development environment: an import is durable across restarts and resumes from committed work, and 10,000 rows complete in 33 seconds where the pre-work arithmetic said 49 minutes. The regression surface is held by 317 automated tests, and the one intentional behaviour change is documented where an operator will meet it.
 
-Two items are worth carrying forward as known, rather than as blockers:
-
-- The all-update path has not been benchmarked at scale. It is correct and tested, but its throughput is unmeasured, and it is the workload most likely to surprise. Worth a measurement pass before any customer-facing volume commitment.
-- Increment B is committed and verified against the deployed database, but the running App Service still serves the previous build. Deploying it is an owner action: the GitHub workflow's deploy step still cannot run (DB-009 — `AZURE_CREDENTIALS` is deliberately absent), so the backend ships via `az webapp deploy` as it has before.
+One item is worth carrying forward as known, rather than as a blocker: **the all-update path has not been benchmarked at scale.** It is correct and tested, but its throughput is unmeasured, and it is the workload most likely to surprise — every benchmark above is an all-create fixture. Worth a measurement pass before any customer-facing volume commitment.
 
 Phase 1.1 (PDF Intake) is the next phase and is unblocked. DB-013 should be re-evaluated as part of its design rather than treated as settled.
+
+---
+
+## 13. Deployment
+
+Deployed to `datakitchen-api-dev` on 2026-08-08, deployment `740ad32b`, following the packaging constraints recorded in AZURE_INFRASTRUCTURE.md — bearer-token zipdeploy (basic publishing credentials are disabled), POSIX separators, `startup.sh` at mode 0755, no `build` script in the shipped `package.json`, and no `node_modules` so Oryx installs on the container and Prisma's engines match Linux.
+
+`startup.sh` ran `prisma migrate deploy` as always. **Increment B adds no migration** — the schema is unchanged since `20260808012223_add_import_job_state`, so this was a no-op.
+
+Verified after restart: health `200` with `database: connected`, unauthenticated requests still rejected with `401`, and the deployed `dist/services` listing matches the new build (`import-chunk.js` and `import-matching.js` present, `duplicate-resolver.js` removed).
+
+The GitHub workflow's deploy job still cannot run — DB-009, `AZURE_CREDENTIALS` deliberately absent — so its test job passes and its deploy step fails, as before. The backend continues to ship by hand.
+
+**Not deployed:** the frontend, which has no changes in this phase.
