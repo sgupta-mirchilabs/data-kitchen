@@ -63,6 +63,7 @@ Catalog isolation is now **verified end to end**: an import into a second catalo
 | Audit log | `import.uploaded` / `confirmed` / `completed` per import, with org + user attribution |
 | Cross-organization SKU isolation | MRC-1001/1002/1003 exist independently in both orgs with different brands |
 | Referential tenant integrity | 0 mismatches across 251 linked rows |
+| **Saved mapping templates** | ✅ **Complete in Phase 1.0.1** — see [PHASE_1_0_1_CLEANUP.md](./PHASE_1_0_1_CLEANUP.md) |
 
 Authorization results were produced with **dedicated fixtures**; the live operator account was never deactivated. Each negative case is paired with a positive control — the same fixture resolves successfully for its own organization — so the refusals are membership-driven, not incidental failures.
 
@@ -92,7 +93,6 @@ That Q3 shows **0 history rows** is itself confirmation: every row was a fresh i
 
 | Item | Reason |
 |---|---|
-| Saved mapping templates | Field mappings are per-import and ephemeral. Re-mapping is manual every time. Phase 3 scope. |
 | Admin consent for Entra app | Provisioning account holds subscription Owner but no directory role. Per-user consent works. |
 | Backend CI/CD deployment | `AZURE_CREDENTIALS` secret absent; deploy step skipped. Backend deployed via `az`. Test job passes. |
 | Retailer Readiness, Mapping Studio, Validation & Exceptions, Delivery, Retail Feedback | Phase 2/3 features. Navigation exists; no backend. |
@@ -142,25 +142,29 @@ guarded by `length === 1`, where there is nothing to choose. No hardcoded catalo
 
 **Tests:** 21 frontend cases (auto-select, needs-selection, restore, stale-id discard, per-organization isolation, organization-switch context change, cross-organization id refusal, type labelling — including an explicit assertion that several catalogs never resolve to the first) and 7 backend cases proving `findDuplicate` constrains every lookup by `catalogId`.
 
-### KI-2 — Invalid GTIN values accepted silently
+### KI-2 — Invalid GTIN values accepted silently — ✅ **RESOLVED** *(Phase 1.0.1, commit `d600a45`)*
 
-**Severity:** Medium — data-quality defect.
+**Original severity:** Medium — data-quality defect.
 
 `ABC123INVALID` was written unchanged into the canonical `gtin` field. Provenance shows the normalizer *did* distinguish it (`normalizationMethod: passthrough` versus `direct` for valid values), but no warning was raised and the batch reported `warnedRows = 0`.
 
 Latent risk: `gtin` is `VARCHAR(14)`. `ABC123INVALID` is 13 characters, so it fit. A longer invalid value would surface as a raw database error rather than a validation message.
 
-**Current behaviour:** accept, no warning.
-**Recommended future behaviour:** validate GTIN-8/12/13/14 structure and check digit; on failure keep the raw value in the source record, leave the canonical `gtin` null, and raise a row-level warning. **Do not redesign the validation engine yet** — record only.
+**Resolution.** `import-validation.ts` now checks format, length (8/12/13/14), the GS1 mod-10 check digit, and UPC-named columns for exactly 12 digits, plus a missing-GTIN warning. Every issue is a **warning**: the row still imports and the product is still created, but it is marked `needs_review`, the warning appears in the import summary, and the issue is persisted in the batch's `errorSummary`. Batches are never rejected and the raw value stays untouched in the source record.
 
-### KI-3 — Duplicate SKU within a single import merges silently
+This is deliberately *not* the Validation Engine — identifiers only, no configurable rules, no retailer requirements.
 
-**Severity:** Medium — UX / data-quality defect.
+### KI-3 — Duplicate SKU within a single import merges silently — ✅ **RESOLVED** *(Phase 1.0.1, commit `d600a45`)*
+
+**Original severity:** Medium — UX / data-quality defect.
 
 `Import 08.07 1.txt` contained `SG-HDPH-WHT` on rows 2 and 5. Outcome: `created = 4, updated = 1`, with history written mid-import. The batch reported `warnedRows = 0`.
 
-**Current behaviour:** last-write-wins, no operator signal. The earlier row is silently superseded.
-**Recommended future behaviour:** detect duplicate business keys during preview, surface an explicit "N duplicate rows detected — last occurrence wins" warning before confirmation, and count them in `warnedRows`. Keep last-write-wins as the default resolution.
+**Resolution.** Repeated business keys are detected during preview and reported with the SKU, its occurrence count, the exact row numbers, which row wins, and which rows will be superseded — before the operator confirms.
+
+**Merge behaviour is unchanged**: last occurrence still wins. The defect was the silence, not the resolution.
+
+Detection runs over the **whole file**. `preview.sampleRows` is only the first 20 rows, so scanning it would have understated the warning; the import service now exposes the full row set server-side for this check.
 
 ### KI-4 — Attribute and field merge semantics *(behaviour confirmed correct; documented)*
 

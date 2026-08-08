@@ -54,7 +54,27 @@ The prototype validated the product concept and pipeline architecture with stake
 
 ### Phase 1: Real Catalog Intake
 
-**Status:** Complete
+**Status:** Complete — verified end to end in the internal Azure environment on 2026-08-07. See [V1_FOUNDATION_COMPLETION.md](../releases/V1_FOUNDATION_COMPLETION.md).
+
+---
+
+### Phase 1.0.1: Catalog Intake Cleanup
+
+**Status:** In Progress
+
+**Purpose:** Make Catalog Intake polished and production-ready for internal Mirchi Labs operators before Phase 1.1 (PDF Intake) and Phase 2. No new platform capability — usability, validation and documentation only.
+
+**Scope:**
+- Saved mapping templates, so a recurring export never needs re-mapping
+- Lightweight import validation for product identifiers (resolves KI-2)
+- Duplicate-SKU warning during preview (resolves KI-3)
+- Removal of remaining prototype/demo artifacts from the live workspace
+- Detailed import summary
+- Product Detail readability
+- Catalog Workspace polish
+- Internal operator guide
+
+**Explicitly out of scope:** PDF intake, the Retail Intelligence Library, the Mapping Engine, the Validation Engine, Delivery, and Retail Feedback. See [PHASE_1_0_1_CLEANUP.md](../releases/PHASE_1_0_1_CLEANUP.md).
 
 Phase 1 replaced the prototype's first screen with a production-grade data pipeline. This is the foundation that every subsequent phase builds on.
 
