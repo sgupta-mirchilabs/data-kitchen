@@ -184,6 +184,11 @@ export class ImportService {
             ? "needs_review"
             : qualityStatus;
 
+        // Count the row once if it carried any identifier warning, so the
+        // persisted warningRows agrees with the warnings actually reported.
+        // Without this the batch records 0 while the summary lists several.
+        if (!hasParseWarning && validationIssues.length > 0) warningRows++;
+
         const duplicate = await findDuplicate(
           this.prisma,
           batch.catalogId,
