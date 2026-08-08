@@ -36,6 +36,10 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 | DB-010 | Entra admin consent | TBD | P3 | Backlog |
 | DB-011 | Asynchronous / large-file imports | TBD | P2 | Backlog |
 | DB-012 | Product edit and delete in the UI | TBD | P2 | Backlog |
+| DB-013 | Import staging layer (ImportStagingRecord) | TBD | P3 | Backlog |
+| DB-014 | Streaming parse from Blob Storage | TBD | P2 | Backlog |
+| DB-015 | External queue (Service Bus) for imports | TBD | P3 | Backlog |
+| DB-016 | Multi-instance import workers | TBD | P3 | Backlog |
 
 ---
 
@@ -210,3 +214,66 @@ IDs are permanent. A dropped item keeps its ID with `Status: Dropped` and a note
 **Status:** Backlog
 
 **Note.** Currently there is no way to remove products imported into the wrong catalog through the UI — relevant now that catalog selection is explicit but mistakes remain possible. This absence is also why the Phase 1.0.1 preview warns before overwriting existing products: without an undo, the warning is the only safeguard.
+
+
+---
+
+## DB-013 - Import staging layer (ImportStagingRecord)
+
+**Description.** A persisted working table of normalized rows with projected action, matched product and validation state, distinct from the immutable SourceRecord.
+
+**Reason deferred.** Evaluated during the Phase 1.0.2 audit and judged **not required** for durable async imports. The file is already durable in Blob Storage and is already re-parsed from there on confirm, so staging would persist a second copy of data that can be deterministically reconstructed. Its real value is chunk-granular resume without re-parsing, which matters at 50,000 rows rather than 10,000. Chunk-boundary resume via progress_rows gives the same durability for far less surface.
+
+**Current phase:** 1.0.2 (evaluated, deferred) - **Target phase:** TBD - **Priority:** P3
+
+**Dependencies.** None.
+
+**Status:** Backlog
+
+**Triggers.** Parse cost becoming material relative to commit cost, or a genuine review-before-commit gate.
+
+---
+
+## DB-014 - Streaming parse from Blob Storage
+
+**Description.** Stream the source file from Blob Storage through a chunked parser into chunked inserts, rather than materializing buffer, string and parsed rows in memory.
+
+**Reason deferred.** The Phase 1.0.2 audit found no measurement showing memory is currently a problem, and the existing synchronous parsers are correct and load-bearing. Rewriting verified parsing code on suspicion is the wrong trade.
+
+**Current phase:** 1.0.2 (evaluated, deferred) - **Target phase:** TBD - **Priority:** P2
+
+**Dependencies.** Memory instrumentation at 1,000 / 10,000 / 50,000 rows must exist first.
+
+**Status:** Backlog
+
+**Triggers.** Measured memory pressure on the 1.75 GB B1 instance, likely above ~50,000 rows.
+
+---
+
+## DB-015 - External queue (Azure Service Bus) for imports
+
+**Description.** Replace the PostgreSQL-backed job queue with a real broker.
+
+**Reason deferred.** The audit found nothing requiring one. A database queue is transactionally consistent with the data it governs and adds no infrastructure. The lease model (locked_by, lock_expires_at, attempts) is deliberately broker-shaped, so migration would replace only the acquisition query.
+
+**Current phase:** 1.0.2 (evaluated, deferred) - **Target phase:** TBD - **Priority:** P3
+
+**Dependencies.** DB-016 in practice.
+
+**Status:** Backlog
+
+**Triggers.** More than one worker instance; queue depth persistently above ~100 or oldest-queued-age in minutes; another service needing import events; priority or scheduled execution; poll load on Postgres becoming measurable.
+
+---
+
+## DB-016 - Multi-instance import workers
+
+**Description.** Run import workers across more than one App Service instance.
+
+**Reason deferred.** The environment is pinned to a single instance and scale-out is already unsafe while startup migrations are in use. The Phase 1.0.2 lease design is nonetheless correct for multiple workers from day one, because leasing is cheap to build and expensive to retrofit.
+
+**Current phase:** 1.0.2 (design accommodates, not enabled) - **Target phase:** TBD - **Priority:** P3
+
+**Dependencies.** Requires resolving startup-migration-vs-scale-out first.
+
+**Status:** Backlog

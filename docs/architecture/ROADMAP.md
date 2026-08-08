@@ -76,6 +76,20 @@ The prototype validated the product concept and pipeline architecture with stake
 
 **Explicitly out of scope:** PDF intake, the Retail Intelligence Library, the Mapping Engine, the Validation Engine, Delivery, and Retail Feedback. See [PHASE_1_0_1_CLEANUP.md](../releases/PHASE_1_0_1_CLEANUP.md).
 
+---
+
+### Phase 1.0.2: Import Scalability & Background Processing
+
+**Status:** In Progress — architecture proposed, **awaiting approval before implementation**.
+
+**Purpose:** Make Catalog Intake safe and usable at hundreds to tens of thousands of rows without requiring the operator to hold an HTTP request or browser tab open.
+
+**Scope:** Persisted asynchronous import jobs (PostgreSQL-backed, no external broker), a formal import state machine, lease/heartbeat with restart recovery, chunked processing with bounded transactions, set-based catalog comparison shared with the preview projection, and operator-visible progress.
+
+**Explicitly preserved:** canonical model, SKU-first/GTIN-second resolution, catalog scoping, organization isolation, immutable SourceRecord, provenance, history, audit, mapping templates, validation and duplicate warnings, merge semantics, Blob Storage layout.
+
+See [ASYNC_IMPORT_ARCHITECTURE.md](./ASYNC_IMPORT_ARCHITECTURE.md).
+
 Phase 1 replaced the prototype's first screen with a production-grade data pipeline. This is the foundation that every subsequent phase builds on.
 
 **What was delivered:**

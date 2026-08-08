@@ -16,6 +16,7 @@
 | **Phase 0** | Prototype | ✅ Complete |
 | **Phase 1** | Catalog Intake | ✅ Complete |
 | **Phase 1.0.1** | Cleanup Sprint | ✅ Complete |
+| **Phase 1.0.2** | Import Scalability & Background Processing | 🔄 **Current** — proposed, awaiting approval |
 | **Phase 1.1** | PDF Intake | ⬜ Next |
 | **Phase 2** | Retail Intelligence Library | ⬜ Planned |
 | **Phase 3** | Mapping Engine | ⬜ Planned |
@@ -50,6 +51,16 @@ Polish and correctness for internal operators. No new platform capability.
 📄 [PHASE_1_0_1_CLEANUP.md](./releases/PHASE_1_0_1_CLEANUP.md) · 📄 [Operator guide](./user-guides/CATALOG_INTAKE_OPERATOR_GUIDE.md)
 
 **Deferred out of this phase:** DB-001, DB-002, DB-003.
+
+---
+
+## Phase 1.0.2 — Import Scalability & Background Processing 🔄
+
+Durable asynchronous imports: the operator confirms, receives a 202, and may close the browser. Processing continues in a PostgreSQL-backed job with leasing, restart recovery, chunked transactions and visible progress.
+
+**Audit finding:** the pipeline issues **12-19 serial database round trips per row** and runs inside the HTTP request with no persisted job state, so a restart loses the run with no recovery and no terminal failure state. Matching itself is correctly indexed; round-trip count is the cost.
+
+[ASYNC_IMPORT_ARCHITECTURE.md](./architecture/ASYNC_IMPORT_ARCHITECTURE.md) — **awaiting approval; no implementation started**
 
 ---
 
@@ -125,3 +136,4 @@ Ingest retailer rejections and feedback, route them to root cause, and close the
 | [deployment/AZURE_INFRASTRUCTURE.md](./deployment/AZURE_INFRASTRUCTURE.md) | Infrastructure plan |
 | [deployment/DEPLOYMENT_STATUS.md](./deployment/DEPLOYMENT_STATUS.md) | Environment checkpoint |
 | [architecture/MULTI_TENANCY.md](./architecture/MULTI_TENANCY.md) | Tenancy model |
+| [architecture/ASYNC_IMPORT_ARCHITECTURE.md](./architecture/ASYNC_IMPORT_ARCHITECTURE.md) | Phase 1.0.2 audit and async import proposal |
