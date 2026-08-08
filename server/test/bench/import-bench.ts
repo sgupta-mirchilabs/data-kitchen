@@ -31,7 +31,22 @@ export interface BenchResult {
   totalMs: number;
   blobMs: number;
   parseMs: number;
+  /** Batched match resolution — one query per chunk since Increment B. */
+  matchMs: number;
+  /** Reading the products a chunk will update. */
+  readMs: number;
+  /** In-memory chunk planning. */
+  planMs: number;
+  /** Canonical product writes: bulk creates plus per-product updates. */
+  canonicalMs: number;
+  sourceMs: number;
+  provenanceMs: number;
+  historyMs: number;
+  progressMs: number;
+  /** Total time inside chunk transactions. */
   commitMs: number;
+  chunks: number;
+  chunkSize: number;
   rowsPerSec: number;
   statements: number;
   statementsPerRow: number;
@@ -41,6 +56,7 @@ export interface BenchResult {
   peakRssMb: number;
   created: number;
   updated: number;
+  unchanged: number;
   status: string;
 }
 
@@ -146,24 +162,37 @@ export async function runBench(prisma: PrismaClient, rows: number, index: number
   const totalMs = Date.now() - t0;
   clearInterval(sampler);
 
-  const batch = await prisma.importBatch.findUniqueOrThrow({ where: { id: upload.importBatchId } });
-  const meta = (batch.parseMetadata ?? {}) as Record<string, unknown>;
+  // Phase timings come from the pipeline itself rather than being inferred from
+  // the outside, so "where did the time go" is answered by the code that spent
+  // it. They are also persisted on the batch for post-hoc investigation.
+  const t = result.timings;
 
   return {
     rows,
     totalMs,
-    blobMs: Number(meta.blobMs ?? 0),
-    parseMs: Number(meta.parseMs ?? 0),
-    commitMs: totalMs,
+    blobMs: t.blobMs,
+    parseMs: t.parseMs,
+    matchMs: t.matchMs,
+    readMs: t.readMs,
+    planMs: t.planMs,
+    canonicalMs: t.canonicalMs,
+    sourceMs: t.sourceMs,
+    provenanceMs: t.provenanceMs,
+    historyMs: t.historyMs,
+    progressMs: t.progressMs,
+    commitMs: t.commitMs,
+    chunks: t.chunks,
+    chunkSize: t.chunkSize,
     rowsPerSec: Math.round((rows / totalMs) * 1000 * 10) / 10,
     statements: counts.total,
-    statementsPerRow: Math.round((counts.total / rows) * 10) / 10,
+    statementsPerRow: Math.round((counts.total / rows) * 100) / 100,
     transactions: counts.transactions,
     byTable: { ...counts.byTable },
     peakHeapMb: Math.round(peakHeap / 1048576),
     peakRssMb: Math.round(peakRss / 1048576),
     created: result.createdProducts,
     updated: result.updatedProducts,
+    unchanged: result.unchangedProducts,
     status: result.status,
   };
 }
@@ -180,11 +209,24 @@ async function main(): Promise<void> {
     process.stdout.write(` ${r.totalMs}ms, ${r.statements} statements\n`);
   }
 
-  console.log("\n| rows | total ms | rows/s | statements | stmt/row | txns | heap MB | rss MB | status |");
-  console.log("|---|---|---|---|---|---|---|---|---|");
+  console.log("\n| rows | total ms | rows/s | statements | stmt/row | txns | chunks | heap MB | rss MB | status |");
+  console.log("|---|---|---|---|---|---|---|---|---|---|");
   for (const r of results) {
-    console.log(`| ${r.rows} | ${r.totalMs} | ${r.rowsPerSec} | ${r.statements} | ${r.statementsPerRow} | ${r.transactions} | ${r.peakHeapMb} | ${r.peakRssMb} | ${r.status} |`);
+    console.log(`| ${r.rows} | ${r.totalMs} | ${r.rowsPerSec} | ${r.statements} | ${r.statementsPerRow} | ${r.transactions} | ${r.chunks} | ${r.peakHeapMb} | ${r.peakRssMb} | ${r.status} |`);
   }
+
+  console.log("\n| rows | blob | parse | match | read | plan | canonical | source | provenance | history | progress | commit |");
+  console.log("|---|---|---|---|---|---|---|---|---|---|---|---|");
+  for (const r of results) {
+    console.log(`| ${r.rows} | ${r.blobMs} | ${r.parseMs} | ${r.matchMs} | ${r.readMs} | ${r.planMs} | ${r.canonicalMs} | ${r.sourceMs} | ${r.provenanceMs} | ${r.historyMs} | ${r.progressMs} | ${r.commitMs} |`);
+  }
+
+  console.log("\n| rows | created | updated | unchanged |");
+  console.log("|---|---|---|---|");
+  for (const r of results) {
+    console.log(`| ${r.rows} | ${r.created} | ${r.updated} | ${r.unchanged} |`);
+  }
+
   console.log("\nStatements by table (largest run):");
   const last = results[results.length - 1];
   for (const [t, n] of Object.entries(last.byTable).sort((a, b) => b[1] - a[1])) {

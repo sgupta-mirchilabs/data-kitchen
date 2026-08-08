@@ -4,13 +4,23 @@ import type { StorageProvider } from "../storage/storage.interface.js";
 import { parseCsv } from "./parser/csv-parser.js";
 import { parseJson } from "./parser/json-parser.js";
 import type { ParseResult, PreviewResult } from "./parser/parser.types.js";
-import { normalizeRow, computeDataQualityStatus, type FieldMapping } from "./normalizer.js";
+import { type FieldMapping } from "./normalizer.js";
 import { resolveImportMatches } from "./import-matching.js";
-import { validateGtin, type ValidationIssue } from "./import-validation.js";
+import {
+  EXISTING_PRODUCT_SELECT,
+  buildChunkPlan,
+  indexParseWarnings,
+  matchRowFromPrepared,
+  prepareRow,
+  sliceForInsert,
+  type ChunkPlan,
+  type ExistingProductSnapshot,
+  type PreparedRow,
+} from "./import-chunk.js";
+import { type ValidationIssue } from "./import-validation.js";
 import { advanceProgress, heartbeat, isCancellationRequested } from "../jobs/import-job.repository.js";
 import { transition } from "../jobs/import-job.repository.js";
 import { isTerminal, type ImportState } from "../jobs/import-state.js";
-import { diffProductFields, serializeHistoryValue } from "./history.js";
 import { ParseError, ValidationError } from "../errors/api-errors.js";
 import type { AppConfig } from "../config.js";
 import type { TenantContext } from "../auth/types.js";
@@ -27,6 +37,37 @@ export interface UploadResult {
   allRows: Array<{ rowNumber: number; data: Record<string, string> }>;
 }
 
+/**
+ * Where an import's wall clock went. Recorded per run so a throughput claim is
+ * always attributable to a phase rather than to "the import".
+ */
+export interface ImportTimings {
+  /** Downloading the source file from blob storage. */
+  blobMs: number;
+  parseMs: number;
+  /** Batched match resolution — one query per chunk. */
+  matchMs: number;
+  /** Reading the products a chunk will update. */
+  readMs: number;
+  /** Building chunk plans in memory. */
+  planMs: number;
+  /** Canonical product writes: bulk creates plus per-product updates. */
+  canonicalMs: number;
+  sourceMs: number;
+  provenanceMs: number;
+  historyMs: number;
+  /** Advancing the resume pointer inside the chunk transaction. */
+  progressMs: number;
+  /** Total time inside chunk transactions. */
+  commitMs: number;
+  chunks: number;
+  chunkSize: number;
+  /** Chunks that failed in bulk and were retried a row at a time. */
+  isolatedChunks: number;
+  peakHeapMb: number;
+  peakRssMb: number;
+}
+
 export interface ImportResults {
   importBatchId: string;
   status: "completed" | "completed_with_warnings" | "failed" | "cancelled";
@@ -36,6 +77,9 @@ export interface ImportResults {
   failedRows: number;
   createdProducts: number;
   updatedProducts: number;
+  /** Matched rows whose product already held every value the row carried. */
+  unchangedProducts: number;
+  timings: ImportTimings;
   warnings: Array<{ rowNumber?: number; message: string }>;
   errors: Array<{ rowNumber?: number; message: string }>;
   /** Identifier validation issues, for the summary and Product Detail. */
@@ -47,6 +91,29 @@ export interface ImportResults {
   filename: string;
   catalogId: string;
   organizationId: string;
+}
+
+/**
+ * A chunk transaction holds locks for as long as it runs, so these are sized to
+ * be generous rather than tight: the default 5s Prisma timeout is a limit on a
+ * single interactive transaction, and a chunk against a remote burstable
+ * instance can legitimately exceed it. Exceeding these means something is
+ * genuinely wrong, and the chunk should roll back.
+ */
+const CHUNK_TX_TIMEOUT_MS = 120_000;
+const CHUNK_TX_MAX_WAIT_MS = 20_000;
+
+/** Run-level accumulators, threaded through chunk commits. */
+interface RunTotals {
+  successfulRows: number;
+  warningRows: number;
+  failedRows: number;
+  createdProducts: number;
+  updatedProducts: number;
+  unchangedProducts: number;
+  warnings: Array<{ rowNumber?: number; message: string }>;
+  errors: Array<{ rowNumber?: number; message: string }>;
+  validationIssues: Array<{ rowNumber: number } & ValidationIssue>;
 }
 
 function detectFileType(filename: string): "csv" | "json" {
@@ -165,10 +232,16 @@ export class ImportService {
    * caller, so a background run carries the same tenant guarantees as a
    * request-bound one.
    *
-   * The per-row commit logic below is deliberately unchanged from the
-   * synchronous pipeline (Increment A does not rewrite it). What is new is the
-   * surrounding chunk loop: heartbeat, cancellation checks, and progress that
-   * advances inside a row transaction so it can never exceed committed work.
+   * Increment B replaced the per-row transaction with a per-chunk one. A chunk
+   * is planned entirely in memory — one batched match query, one read of the
+   * products it will update — and then committed as a single transaction whose
+   * last statement advances the resume pointer. Progress therefore still means
+   * exactly what it meant in Increment A: the highest FULLY committed source
+   * row. A chunk that fails rolls back its writes and its progress together.
+   *
+   * Row-level fault isolation survives the change. If a chunk's bulk commit
+   * fails, it is retried one row at a time, so a single unimportable row costs
+   * its own row rather than the ninety-nine around it.
    */
   async executeImport(
     importBatchId: string,
@@ -199,284 +272,109 @@ export class ImportService {
     log({ event: "import.parsed", importBatchId, rows: parseResult.rows.length, blobMs, parseMs,
           heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1048576), resumeFrom });
 
-    let successfulRows = 0;
-    let warningRows = 0;
-    let failedRows = 0;
-    let createdProducts = 0;
-    let updatedProducts = 0;
     const startedAt = Date.now();
-    const warnings: Array<{ rowNumber?: number; message: string }> = [];
-    const rowValidationIssues: Array<{ rowNumber: number } & ValidationIssue> = [];
-    const errors: Array<{ rowNumber?: number; message: string }> = [];
+    const totals: RunTotals = {
+      successfulRows: 0, warningRows: 0, failedRows: 0,
+      createdProducts: 0, updatedProducts: 0, unchangedProducts: 0,
+      warnings: [], errors: [], validationIssues: [],
+    };
 
     for (const warning of parseResult.warnings) {
-      warnings.push({ rowNumber: warning.rowNumber, message: warning.message });
+      totals.warnings.push({ rowNumber: warning.rowNumber, message: warning.message });
     }
+
+    const chunkSize = Math.max(1, opts.chunkSize || this.config.imports.chunkSize);
+    const timings: ImportTimings = {
+      blobMs, parseMs, matchMs: 0, readMs: 0, planMs: 0, canonicalMs: 0,
+      sourceMs: 0, provenanceMs: 0, historyMs: 0, progressMs: 0, commitMs: 0,
+      chunks: 0, chunkSize, isolatedChunks: 0, peakHeapMb: 0, peakRssMb: 0,
+    };
+
+    // Rows at or below committed progress were durably applied by a prior
+    // attempt. The (import_batch_id, row_number) unique index remains a
+    // defensive backstop, not the mechanism relied on here.
+    //
+    // Normalization and validation happen up front for the whole file: they are
+    // pure CPU work, they were never the bottleneck, and doing them here keeps
+    // the chunk loop to database work only.
+    const warningsByRow = indexParseWarnings(parseResult.warnings);
+    const pending = parseResult.rows
+      .filter((row) => row.rowNumber > resumeFrom)
+      .map((row) => prepareRow(row, fieldMappings, warningsByRow.get(row.rowNumber) ?? []));
 
     let cancelled = false;
-    // Heartbeat at roughly a third of the lease so a slow row cannot let the
-    // lease lapse, and always on the final row so a short file still reports.
+    // Heartbeat at roughly a third of the lease so a slow chunk cannot let the
+    // lease lapse, and always on the last chunk so a short file still reports.
     const livenessIntervalMs = Math.max(2000, Math.floor(opts.leaseMs / 3));
     let lastLivenessAt = Date.now();
-    const lastRowNumber = parseResult.rows.length > 0
-      ? parseResult.rows[parseResult.rows.length - 1].rowNumber
-      : 0;
 
-    for (const row of parseResult.rows) {
-      // Resume: rows below committed progress were durably applied by a prior
-      // attempt. The (import_batch_id, row_number) unique index remains a
-      // defensive backstop, not the mechanism relied on here.
-      if (row.rowNumber <= resumeFrom) continue;
+    for (let offset = 0; offset < pending.length; offset += chunkSize) {
+      const slice = pending.slice(offset, offset + chunkSize);
+      const isFinalChunk = offset + slice.length >= pending.length;
 
       try {
-        const { product: normalized, provenance } = normalizeRow(row.data, fieldMappings);
-        const qualityStatus = computeDataQualityStatus(normalized);
-
-        const hasParseWarning = parseResult.warnings.some((w) => w.rowNumber === row.rowNumber);
-
-        // Lightweight identifier validation (KI-2). Never fails the row — an
-        // invalid GTIN still imports, but is surfaced and marked for review
-        // instead of being accepted silently.
-        const validationIssues: ValidationIssue[] = validateGtin(
-          normalized.gtin,
-          fieldMappings.gtin,
-        );
-        for (const issue of validationIssues) {
-          warnings.push({ rowNumber: row.rowNumber, message: issue.message });
-          rowValidationIssues.push({ rowNumber: row.rowNumber, ...issue });
-        }
-
-        const effectiveStatus = hasParseWarning
-          ? "parse_warning"
-          : validationIssues.length > 0
-            ? "needs_review"
-            : qualityStatus;
-
-        // Count the row once if it carried any identifier warning, so the
-        // persisted warningRows agrees with the warnings actually reported.
-        // Without this the batch records 0 while the summary lists several.
-        if (!hasParseWarning && validationIssues.length > 0) warningRows++;
-
-        // One shared matcher for preview and commit. Still one call per row at
-        // this point — Increment B batches it per chunk next; what changes here
-        // is only that the rule lives in one place.
-        const [resolvedRow] = await resolveImportMatches(
-          this.prisma,
-          { catalogId: batch.catalogId, organizationId: batch.organizationId },
-          [{ rowNumber: row.rowNumber, sku: normalized.sku, gtin: normalized.gtin }],
-        );
-        const duplicate = resolvedRow.target.kind === "existing" ? resolvedRow.target : null;
-
-        let productId: string;
-        let isUpdate = false;
-
-        if (duplicate) {
-          isUpdate = true;
-          productId = duplicate.productId;
-
-          const existing = await this.prisma.canonicalProduct.findUnique({
-            where: { id: productId },
-          });
-
-          if (existing) {
-            const updateData: Record<string, unknown> = {};
-            const incomingFields: Record<string, unknown> = {};
-
-            if (normalized.sku) { updateData.sku = normalized.sku; incomingFields.sku = normalized.sku; }
-            if (normalized.gtin) { updateData.gtin = normalized.gtin; incomingFields.gtin = normalized.gtin; }
-            if (normalized.brand) { updateData.brand = normalized.brand; incomingFields.brand = normalized.brand; }
-            if (normalized.productName) { updateData.productName = normalized.productName; incomingFields.product_name = normalized.productName; }
-            if (normalized.shortDescription) { updateData.shortDescription = normalized.shortDescription; incomingFields.short_description = normalized.shortDescription; }
-            if (normalized.longDescription) { updateData.longDescription = normalized.longDescription; incomingFields.long_description = normalized.longDescription; }
-            if (normalized.category) { updateData.category = normalized.category; incomingFields.category = normalized.category; }
-            if (normalized.manufacturer) { updateData.manufacturer = normalized.manufacturer; incomingFields.manufacturer = normalized.manufacturer; }
-
-            if (Object.keys(normalized.attributes).length > 0) {
-              const mergedAttributes = { ...(existing.attributes as Record<string, unknown>), ...normalized.attributes };
-              updateData.attributes = mergedAttributes;
-            }
-
-            const existingFields: Record<string, unknown> = {
-              sku: existing.sku,
-              gtin: existing.gtin,
-              brand: existing.brand,
-              product_name: existing.productName,
-              short_description: existing.shortDescription,
-              long_description: existing.longDescription,
-              category: existing.category,
-              manufacturer: existing.manufacturer,
-            };
-
-            const historyChanges = diffProductFields(existingFields, incomingFields);
-
-            updateData.dataQualityStatus = effectiveStatus;
-            updateData.updatedBy = ctx.displayName;
-
-            await this.prisma.$transaction(async (tx) => {
-              await tx.canonicalProduct.update({
-                where: { id: productId },
-                data: updateData,
-              });
-
-              const sourceRecord = await tx.sourceRecord.create({
-                data: {
-                  importBatchId: batch.id,
-                  rowNumber: row.rowNumber,
-                  sourceRecordKey: normalized.sku ?? normalized.gtin ?? null,
-                  rawPayloadJson: row.data as unknown as any,
-                  parseStatus: hasParseWarning ? "warning" : "success",
-                  parseErrorsJson: hasParseWarning
-                    ? parseResult.warnings.filter((w) => w.rowNumber === row.rowNumber) as unknown as any
-                    : undefined,
-                  canonicalProductId: productId,
-                },
-              });
-
-              for (const p of provenance) {
-                await tx.fieldProvenance.create({
-                  data: {
-                    canonicalProductId: productId,
-                    canonicalField: p.canonicalField,
-                    sourceRecordId: sourceRecord.id,
-                    sourceField: p.sourceField,
-                    originalValue: p.originalValue,
-                    normalizedValue: p.normalizedValue,
-                    normalizationMethod: p.normalizationMethod,
-                  },
-                });
-              }
-
-              for (const change of historyChanges) {
-                await tx.canonicalProductHistory.create({
-                  data: {
-                    canonicalProductId: productId,
-                    field: change.field,
-                    previousValue: change.previousValue,
-                    newValue: change.newValue,
-                    sourceRecordId: sourceRecord.id,
-                    actor: `system:import`,
-                  },
-                });
-              }
-
-              // Resume pointer advances with the row's own writes. If this
-              // transaction rolls back the pointer rolls back with it, so
-              // progress_rows is always the highest FULLY committed row.
-              await advanceProgress(tx, importBatchId, row.rowNumber);
-            });
-
-            updatedProducts++;
-          }
-        } else {
-          await this.prisma.$transaction(async (tx) => {
-            const matchStatus = (normalized.sku === null && normalized.gtin === null)
-              ? "needs_review"
-              : effectiveStatus;
-
-            const product = await tx.canonicalProduct.create({
-              data: {
-                organizationId: batch.organizationId,
-                catalogId: batch.catalogId,
-                sku: normalized.sku,
-                gtin: normalized.gtin,
-                brand: normalized.brand,
-                productName: normalized.productName,
-                shortDescription: normalized.shortDescription,
-                longDescription: normalized.longDescription,
-                category: normalized.category,
-                manufacturer: normalized.manufacturer,
-                lifecycleStatus: "draft",
-                dataQualityStatus: validationIssues.length > 0 ? "needs_review" : matchStatus,
-                attributes: (normalized.attributes ?? {}) as unknown as any,
-                createdBy: ctx.displayName,
-                updatedBy: ctx.displayName,
-              },
-            });
-
-            productId = product.id;
-
-            const sourceRecord = await tx.sourceRecord.create({
-              data: {
-                importBatchId: batch.id,
-                rowNumber: row.rowNumber,
-                sourceRecordKey: normalized.sku ?? normalized.gtin ?? null,
-                rawPayloadJson: row.data as unknown as any,
-                parseStatus: hasParseWarning ? "warning" : "success",
-                parseErrorsJson: hasParseWarning
-                  ? parseResult.warnings.filter((w) => w.rowNumber === row.rowNumber) as unknown as any
-                  : undefined,
-                canonicalProductId: product.id,
-              },
-            });
-
-            for (const p of provenance) {
-              await tx.fieldProvenance.create({
-                data: {
-                  canonicalProductId: product.id,
-                  canonicalField: p.canonicalField,
-                  sourceRecordId: sourceRecord.id,
-                  sourceField: p.sourceField,
-                  originalValue: p.originalValue,
-                  normalizedValue: p.normalizedValue,
-                  normalizationMethod: p.normalizationMethod,
-                },
-              });
-            }
-
-            // See the update path: the resume pointer is part of the row's
-            // transaction, not a separate write.
-            await advanceProgress(tx, importBatchId, row.rowNumber);
-          });
-
-          createdProducts++;
-        }
-
-        if (hasParseWarning) {
-          warningRows++;
-        }
-        successfulRows++;
-
-        // Liveness and cancellation are time-based, not row-modulo. A file
-        // smaller than one chunk previously never reached a boundary, so it
-        // never heartbeat and never checkpointed. Progress no longer depends on
-        // this block at all — it is committed with each row above.
-        const isFinalRow = row.rowNumber === lastRowNumber;
-        if (Date.now() - lastLivenessAt >= livenessIntervalMs || isFinalRow) {
-          const stillOwned = await heartbeat(this.prisma, importBatchId, opts.workerId, opts.leaseMs);
-          log({ event: "import.progress", importBatchId, throughRow: row.rowNumber,
-                sinceLastMs: Date.now() - lastLivenessAt,
-                heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1048576) });
-          lastLivenessAt = Date.now();
-
-          // Losing the lease means another worker reclaimed this job; stopping
-          // immediately avoids two workers committing the same import.
-          if (!stillOwned) {
-            log({ event: "import.lease_lost", importBatchId, workerId: opts.workerId });
-            throw new Error("Lease lost; another worker has taken over this import");
-          }
-
-          if (await isCancellationRequested(this.prisma, importBatchId)) {
-            cancelled = true;
-            break;
-          }
-        }
+        const plan = await this.commitChunk(batch, ctx.displayName, slice, timings);
+        this.tallyChunk(slice, plan, totals);
       } catch (err) {
-        failedRows++;
-        const message = err instanceof Error ? err.message : String(err);
-        errors.push({ rowNumber: row.rowNumber, message: `Row ${row.rowNumber}: ${message}` });
+        if (slice.length === 1) {
+          await this.recordFailedRow(batch.id, slice[0], err, totals);
+        } else {
+          // Fault isolation. The bulk attempt rolled back in full, so replay the
+          // chunk one row at a time and charge the failure to the row that
+          // caused it rather than to the ninety-nine around it. This is what
+          // keeps Increment A's per-row tolerance intact under chunking.
+          timings.isolatedChunks++;
+          log({ event: "import.chunk_isolating", importBatchId,
+                fromRow: slice[0].rowNumber, rows: slice.length,
+                message: err instanceof Error ? err.message : String(err) });
 
-        await this.prisma.sourceRecord.create({
-          data: {
-            importBatchId: batch.id,
-            rowNumber: row.rowNumber,
-            sourceRecordKey: null,
-            rawPayloadJson: row.data as unknown as any,
-            parseStatus: "error",
-            parseErrorsJson: [{ message }] as unknown as any,
-          },
-        }).catch(() => {});
+          for (const row of slice) {
+            try {
+              const plan = await this.commitChunk(batch, ctx.displayName, [row], timings);
+              this.tallyChunk([row], plan, totals);
+            } catch (rowErr) {
+              await this.recordFailedRow(batch.id, row, rowErr, totals);
+            }
+          }
+        }
+      }
+
+      timings.chunks++;
+      const mem = process.memoryUsage();
+      timings.peakHeapMb = Math.max(timings.peakHeapMb, Math.round(mem.heapUsed / 1048576));
+      timings.peakRssMb = Math.max(timings.peakRssMb, Math.round(mem.rss / 1048576));
+
+      // Liveness and cancellation stay time-based rather than chunk-modulo, so
+      // a file smaller than one chunk still heartbeats and still honours a
+      // cancellation request.
+      if (Date.now() - lastLivenessAt >= livenessIntervalMs || isFinalChunk) {
+        const stillOwned = await heartbeat(this.prisma, importBatchId, opts.workerId, opts.leaseMs);
+        log({ event: "import.progress", importBatchId,
+              throughRow: slice[slice.length - 1].rowNumber,
+              chunks: timings.chunks,
+              sinceLastMs: Date.now() - lastLivenessAt,
+              heapUsedMb: Math.round(mem.heapUsed / 1048576) });
+        lastLivenessAt = Date.now();
+
+        // Losing the lease means another worker reclaimed this job; stopping
+        // immediately avoids two workers committing the same import.
+        if (!stillOwned) {
+          log({ event: "import.lease_lost", importBatchId, workerId: opts.workerId });
+          throw new Error("Lease lost; another worker has taken over this import");
+        }
+
+        if (await isCancellationRequested(this.prisma, importBatchId)) {
+          cancelled = true;
+          break;
+        }
       }
     }
+
+    const {
+      successfulRows, warningRows, failedRows, createdProducts, updatedProducts,
+      unchangedProducts, warnings, errors,
+    } = totals;
+    const rowValidationIssues = totals.validationIssues;
 
     const processedRows = parseResult.rows.length - resumeFrom;
     const finalStatus: ImportState = cancelled
@@ -501,8 +399,24 @@ export class ImportService {
         : {}),
     });
 
+    // Kept on the batch so an operator investigating a slow import can see
+    // where its time went without re-running it. Best-effort: losing the
+    // measurement must never fail an import that succeeded.
+    await this.prisma.importBatch.update({
+      where: { id: importBatchId },
+      data: {
+        parseMetadata: {
+          ...((batch.parseMetadata ?? {}) as Record<string, unknown>),
+          timings: { ...timings, totalMs: Date.now() - startedAt },
+        } as unknown as any,
+      },
+    }).catch(() => {});
+
     log({ event: "import.finished", importBatchId, status: finalStatus,
           rows: parseResult.rows.length, successfulRows, failedRows,
+          createdProducts, updatedProducts, unchangedProducts,
+          chunks: timings.chunks, chunkSize: timings.chunkSize,
+          isolatedChunks: timings.isolatedChunks,
           durationMs: Date.now() - startedAt, cancelled });
 
     return {
@@ -514,6 +428,8 @@ export class ImportService {
       failedRows,
       createdProducts,
       updatedProducts,
+      unchangedProducts,
+      timings,
       warnings,
       errors,
       validationIssues: rowValidationIssues,
@@ -523,5 +439,165 @@ export class ImportService {
       catalogId: batch.catalogId,
       organizationId: batch.organizationId,
     };
+  }
+
+  /**
+   * Resolves, plans and commits one chunk.
+   *
+   * Two round trips before the transaction — the batched match query and one
+   * read of the products the chunk will update — and then a single transaction
+   * containing every write the chunk performs, ending with the resume pointer.
+   * If it throws, nothing in the chunk was committed, progress included.
+   */
+  private async commitChunk(
+    batch: { id: string; organizationId: string; catalogId: string },
+    actor: string,
+    rows: PreparedRow[],
+    timings: ImportTimings,
+  ): Promise<ChunkPlan> {
+    const matchStart = Date.now();
+    const resolved = await resolveImportMatches(
+      this.prisma,
+      { catalogId: batch.catalogId, organizationId: batch.organizationId },
+      rows.map(matchRowFromPrepared),
+    );
+    timings.matchMs += Date.now() - matchStart;
+
+    const updateIds = [...new Set(
+      resolved
+        .filter((r) => r.target.kind === "existing")
+        .map((r) => (r.target as { productId: string }).productId),
+    )];
+
+    const readStart = Date.now();
+    const existingRows = updateIds.length
+      ? await this.prisma.canonicalProduct.findMany({
+          // The ids came from an already-scoped query; scoping the read as well
+          // costs nothing and means no single mistake can reach another tenant.
+          where: {
+            id: { in: updateIds },
+            catalogId: batch.catalogId,
+            organizationId: batch.organizationId,
+          },
+          select: EXISTING_PRODUCT_SELECT,
+        })
+      : [];
+    timings.readMs += Date.now() - readStart;
+
+    const existing = new Map<string, ExistingProductSnapshot>(
+      existingRows.map((p) => [
+        p.id,
+        { ...p, attributes: (p.attributes ?? {}) as Record<string, unknown> },
+      ]),
+    );
+
+    const planStart = Date.now();
+    const plan = buildChunkPlan({
+      importBatchId: batch.id,
+      organizationId: batch.organizationId,
+      catalogId: batch.catalogId,
+      actor,
+      rows,
+      resolved,
+      existing,
+    });
+    timings.planMs += Date.now() - planStart;
+
+    const commitStart = Date.now();
+    await this.prisma.$transaction(async (tx) => {
+      let phase = Date.now();
+      for (const slice of sliceForInsert(plan.creates)) {
+        await tx.canonicalProduct.createMany({ data: slice });
+      }
+      // Updates remain one statement per changed product. The update shape is
+      // per-row — which columns appear depends on which fields the row carried
+      // — so batching them means either a synthetic VALUES join or overwriting
+      // columns the row never mentioned. Correctness first: the saving that
+      // matters is that unchanged products produce no statement at all.
+      for (const update of plan.updates) {
+        await tx.canonicalProduct.update({ where: { id: update.id }, data: update.data });
+      }
+      timings.canonicalMs += Date.now() - phase;
+
+      phase = Date.now();
+      for (const slice of sliceForInsert(plan.sourceRecords)) {
+        await tx.sourceRecord.createMany({ data: slice });
+      }
+      timings.sourceMs += Date.now() - phase;
+
+      phase = Date.now();
+      for (const slice of sliceForInsert(plan.provenance)) {
+        await tx.fieldProvenance.createMany({ data: slice });
+      }
+      timings.provenanceMs += Date.now() - phase;
+
+      phase = Date.now();
+      for (const slice of sliceForInsert(plan.history)) {
+        await tx.canonicalProductHistory.createMany({ data: slice });
+      }
+      timings.historyMs += Date.now() - phase;
+
+      // Last, and in the same transaction: progress cannot claim work that has
+      // not committed, because it commits with it.
+      phase = Date.now();
+      await advanceProgress(tx, batch.id, plan.lastRowNumber);
+      timings.progressMs += Date.now() - phase;
+    }, { maxWait: CHUNK_TX_MAX_WAIT_MS, timeout: CHUNK_TX_TIMEOUT_MS });
+    timings.commitMs += Date.now() - commitStart;
+
+    return plan;
+  }
+
+  /**
+   * Counts a chunk, and only once it has committed.
+   *
+   * Deliberately after the write rather than during planning: a chunk that
+   * fails is replayed a row at a time, and each replayed row tallies itself.
+   * Tallying earlier would double-count every isolated chunk.
+   */
+  private tallyChunk(rows: PreparedRow[], plan: ChunkPlan, totals: RunTotals): void {
+    for (const row of rows) {
+      for (const issue of row.validationIssues) {
+        totals.warnings.push({ rowNumber: row.rowNumber, message: issue.message });
+        totals.validationIssues.push({ rowNumber: row.rowNumber, ...issue });
+      }
+      // One warning row per row that carried a warning of either kind, so the
+      // persisted count agrees with the warnings the summary lists.
+      if (row.hasParseWarning || row.validationIssues.length > 0) totals.warningRows++;
+      totals.successfulRows++;
+    }
+    totals.createdProducts += plan.createdProducts;
+    totals.updatedProducts += plan.updatedProducts;
+    totals.unchangedProducts += plan.unchangedProducts;
+  }
+
+  /**
+   * Records a row that could not be committed even on its own.
+   *
+   * The error source record is diagnostic and best-effort: failing to write it
+   * must not turn one bad row into a failed import. Progress is not advanced
+   * past the row here — the next chunk to commit advances past it, which is
+   * what makes a permanently bad row cost one row rather than stall the import.
+   */
+  private async recordFailedRow(
+    importBatchId: string,
+    row: PreparedRow,
+    err: unknown,
+    totals: RunTotals,
+  ): Promise<void> {
+    totals.failedRows++;
+    const message = err instanceof Error ? err.message : String(err);
+    totals.errors.push({ rowNumber: row.rowNumber, message: `Row ${row.rowNumber}: ${message}` });
+
+    await this.prisma.sourceRecord.create({
+      data: {
+        importBatchId,
+        rowNumber: row.rowNumber,
+        sourceRecordKey: null,
+        rawPayloadJson: row.raw as unknown as any,
+        parseStatus: "error",
+        parseErrorsJson: [{ message }] as unknown as any,
+      },
+    }).catch(() => {});
   }
 }
